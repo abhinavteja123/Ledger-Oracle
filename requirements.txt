@@ -1,0 +1,5 @@
+cerebras-cloud-sdk
+fastapi
+uvicorn[standard]
+pydantic>=2
+pytest

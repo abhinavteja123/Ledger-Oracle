@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+audit.jsonl
+data/ledger.db
+data/claims.jsonl
+data/MANIFEST.json
+.pytest_cache/
