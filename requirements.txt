@@ -1,4 +1,6 @@
 cerebras-cloud-sdk
+groq
+psycopg2-binary
 fastapi
 uvicorn[standard]
 pydantic>=2

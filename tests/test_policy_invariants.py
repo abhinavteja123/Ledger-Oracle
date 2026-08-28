@@ -139,6 +139,26 @@ def test_escalate_contradictory_amounts_risk_flag():
     assert v.reason_code == "CONTRADICTORY_AMOUNTS"
 
 
+def test_pass_via_check_payment_status_evidence_alone():
+    # Found live: the agent used check_payment_status (not get_payment_by_utr) and
+    # found the right capture. decide() must resolve I2 from that evidence too.
+    from models import PaymentStatusResult
+    c = capture()
+    status = PaymentStatusResult(capture=c, found=True)
+    v = decide(state(extracted=claim(), evidence=[status]))
+    assert v.decision == "pass"
+
+
+def test_decidable_false_on_order_evidence_alone_when_reference_claimed():
+    # Regression: order-level evidence alone must NOT make a reference-bearing claim
+    # look "decidable" -- decide() needs a real reference match (lookup or matching
+    # check_payment_status), not just any evidence at all.
+    from policy import decidable
+    c = capture()
+    st = state(extracted=claim(), evidence=[order_payments_result(captures=[c])])
+    assert decidable(st) is False
+
+
 def test_duplicate_charge_no_reference_resolves_via_order_evidence():
     c = capture(amount_paise=249900)
     v = decide(state(

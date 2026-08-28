@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ledger Oracle -- Review</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    margin: 0; padding: 16px; background: #0b0d10; color: #d8dee4;
+    font-size: 14px; line-height: 1.4;
+  }
+  header { display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 12px; }
+  header h1 { font-size: 15px; margin: 0; letter-spacing: 0.05em; }
+  .layout { display: grid; grid-template-columns: 260px 1fr; gap: 16px; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  .panel { border: 1px solid #333; padding: 12px; background: #12151a; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: #888; margin: 0 0 8px; }
+  #queueList { list-style: none; margin: 0; padding: 0; }
+  #queueList li { padding: 6px 8px; border: 1px solid #222; margin-bottom: 4px;
+    cursor: pointer; font-size: 12px; }
+  #queueList li:hover { background: #1b2027; }
+  #queueList li.active { border-color: #d4a017; background: #1a1608; }
+  .placeholder { color: #666; font-style: italic; }
+  .why-stopped { border: 1px solid #d4a017; background: #1a1608; padding: 10px;
+    margin-bottom: 12px; font-size: 13px; }
+  .why-stopped .code { font-weight: bold; color: #d4a017; }
+  .section { margin-bottom: 14px; }
+  .section h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: #888; margin: 0 0 6px; border-bottom: 1px solid #222; padding-bottom: 4px; }
+  .claim-text { background: #0b0d10; border: 1px solid #222; padding: 8px; white-space: pre-wrap; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid #222; font-size: 12px; }
+  th { color: #888; font-weight: normal; }
+  .pass-cell { color: #66bb6a; }
+  .fail-cell { color: #ef5350; }
+  .row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; font-size: 12px; }
+  .row .k { color: #888; }
+  .why-not-block { border-left: 3px solid #d4a017; padding: 6px 8px; background: #1a1608; font-size: 12px; }
+  textarea#note { width: 100%; min-height: 60px; background: #0b0d10; color: #d8dee4;
+    border: 1px solid #333; padding: 6px; font-family: inherit; font-size: 13px; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  button { background: #1b2027; color: #d8dee4; border: 1px solid #444; padding: 8px 14px;
+    font-family: inherit; cursor: pointer; }
+  button:hover { background: #232a33; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .approve { border-color: #2e7d32; }
+  .reject { border-color: #c62828; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>LEDGER ORACLE -- REVIEW QUEUE</h1>
+  <span id="queueCount">(-- open)</span>
+</header>
+
+<div class="layout">
+  <div class="panel">
+    <h2>Queue</h2>
+    <ul id="queueList"><li class="placeholder">loading...</li></ul>
+  </div>
+
+  <div class="panel">
+    <div id="detailEmpty" class="placeholder">-- select a claim from the queue --</div>
+
+    <div id="detail" style="display:none;">
+      <div class="why-stopped">
+        <div>WHY AUTOMATION STOPPED</div>
+        <div class="code" id="whyStoppedCode">--</div>
+        <div id="whyStoppedText"></div>
+      </div>
+
+      <div class="section">
+        <h3>Customer claim</h3>
+        <div class="claim-text" id="rawClaim"></div>
+      </div>
+
+      <div class="section">
+        <h3>Extracted</h3>
+        <div id="extractedFields"></div>
+      </div>
+
+      <div class="section">
+        <h3>Investigation</h3>
+        <table id="toolsTable">
+          <thead><tr><th>#</th><th>tool</th><th>result</th><th>latency</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="section">
+        <h3>Invariants</h3>
+        <table id="invariantsTable">
+          <thead><tr><th>invariant</th><th>status</th><th>detail</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="section">
+        <div class="why-not-block" id="whyNotBlock"></div>
+      </div>
+
+      <div class="section">
+        <h3>Decision</h3>
+        <textarea id="note" placeholder="reviewer note..."></textarea>
+        <div class="actions">
+          <button class="approve" id="approveBtn">APPROVE REFUND</button>
+          <button class="reject" id="rejectBtn">REJECT</button>
+          <button id="infoBtn">REQUEST MORE INFO</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/*
+ * Expected GET /review/queue response shape:
+ *   { claims: [ { claim_id: string, status: string, reason_code: string,
+ *                 stopped_at: string } ] }
+ *
+ * Expected GET /review/{claim_id} response shape (drives the detail panel; same
+ * verdict/investigation shape as /verify's response in verify.html, plus claim-level
+ * fields):
+ * {
+ *   claim_id: string,
+ *   raw_message: string,
+ *   stop_reason: string,           // "WHY AUTOMATION STOPPED" code, e.g. REF_OUTSIDE_CONNECTED_LEDGER
+ *   stop_reason_text: string,      // plain-language explanation
+ *   extracted: { ...StructuredClaim fields... } | null,
+ *   tools_called: [ { tool, args, timestamp } ],
+ *   evidence: [ ...tool result objects... ],
+ *   invariants: [ { invariant, passed, detail, evidence_rows } ],
+ *   why_not_block: string | null,
+ *   sanitizer_flags: string[]
+ * }
+ *
+ * Expected POST /review/{claim_id}/decide request body:
+ *   { action: "approve" | "reject" | "request_info", note: string }
+ * Expected response: { ok: true } or similar -- only `ok`/error is read here.
+ */
+
+const $ = (id) => document.getElementById(id);
+let currentClaimId = null;
+
+function summarizeEvidence(ev) {
+  if (!ev) return "--";
+  if (ev.matches) return ev.matches.length + " match(es), " + (ev.near_matches?.length ?? 0) + " near";
+  if (ev.captures) return ev.captures.length + " capture(s)";
+  if (ev.refunds) return ev.refunds.length + " refund(s)";
+  if (ev.duplicate_pairs) return ev.duplicate_pairs.length + " duplicate pair(s)";
+  if (ev.found !== undefined) return ev.found ? "found" : "not found";
+  if (ev.error_class) return "ERROR: " + ev.error_class;
+  return "--";
+}
+
+function rupees(paise) {
+  if (paise === null || paise === undefined) return "--";
+  return "Rs " + (paise / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+}
+
+async function loadQueue() {
+  const list = $("queueList");
+  try {
+    const res = await fetch("/review/queue");
+    const data = await res.json();
+    const claims = data.claims || [];
+    $("queueCount").textContent = "(" + claims.length + " open)";
+    if (!claims.length) {
+      list.innerHTML = '<li class="placeholder">queue is empty</li>';
+      return;
+    }
+    list.innerHTML = claims.map((c) =>
+      '<li data-id="' + c.claim_id + '">' + c.claim_id + '<br><span class="placeholder">' +
+      (c.reason_code ?? c.status ?? "") + '</span></li>'
+    ).join("");
+    list.querySelectorAll("li[data-id]").forEach((li) => {
+      li.addEventListener("click", () => selectClaim(li.dataset.id, li));
+    });
+  } catch (err) {
+    list.innerHTML = '<li class="fail-cell">failed to load queue: ' + err + '</li>';
+  }
+}
+
+async function selectClaim(claimId, liEl) {
+  currentClaimId = claimId;
+  document.querySelectorAll("#queueList li").forEach((li) => li.classList.remove("active"));
+  if (liEl) liEl.classList.add("active");
+
+  $("detailEmpty").style.display = "none";
+  $("detail").style.display = "block";
+
+  try {
+    const res = await fetch("/review/" + encodeURIComponent(claimId));
+    const d = await res.json();
+    renderDetail(d);
+  } catch (err) {
+    $("whyStoppedText").textContent = "failed to load claim: " + err;
+  }
+}
+
+function renderDetail(d) {
+  $("whyStoppedCode").textContent = d.stop_reason ?? d.reason_code ?? "--";
+  $("whyStoppedText").textContent = d.stop_reason_text ?? "";
+  $("rawClaim").textContent = d.raw_message ?? "--";
+
+  const extracted = d.extracted;
+  const fields = ["claim_type", "order_id", "claimed_reference", "claimed_amount_paise",
+    "claimed_instrument"];
+  $("extractedFields").innerHTML = extracted
+    ? fields.map((f) => {
+        let val = extracted[f];
+        if (f === "claimed_amount_paise" && val != null) val = rupees(val);
+        return '<div class="row"><span class="k">' + f + '</span><span>' + (val ?? "--") + '</span></div>';
+      }).join("")
+    : '<span class="placeholder">-- did not parse --</span>';
+
+  const toolsBody = $("toolsTable").querySelector("tbody");
+  const tools = d.tools_called || [];
+  toolsBody.innerHTML = tools.length
+    ? tools.map((tc, i) => {
+        const ev = (d.evidence && d.evidence[i]) || {};
+        const latency = ev.query_latency_ms != null ? ev.query_latency_ms + "ms" : "--";
+        return '<tr><td>' + (i + 1) + '</td><td>' + (tc.tool ?? "--") + '</td><td>' +
+          summarizeEvidence(ev) + '</td><td>' + latency + '</td></tr>';
+      }).join("")
+    : '<tr><td colspan="4" class="placeholder">no tool calls</td></tr>';
+
+  const invBody = $("invariantsTable").querySelector("tbody");
+  const invariants = d.invariants || [];
+  invBody.innerHTML = invariants.length
+    ? invariants.map((inv) => {
+        const cls = inv.passed ? "pass-cell" : "fail-cell";
+        return '<tr><td>' + inv.invariant + '</td><td class="' + cls + '">' +
+          (inv.passed ? "OK" : "FAIL") + '</td><td>' + (inv.detail ?? "") + '</td></tr>';
+      }).join("")
+    : '<tr><td colspan="3" class="placeholder">no invariants</td></tr>';
+
+  $("whyNotBlock").textContent = "WHY NOT BLOCK: " + (d.why_not_block ?? "--");
+  $("note").value = "";
+}
+
+async function decide(action) {
+  if (!currentClaimId) return;
+  const buttons = [$("approveBtn"), $("rejectBtn"), $("infoBtn")];
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    await fetch("/review/" + encodeURIComponent(currentClaimId) + "/decide", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, note: $("note").value }),
+    });
+    $("detail").style.display = "none";
+    $("detailEmpty").style.display = "block";
+    $("detailEmpty").textContent = "-- select a claim from the queue --";
+    currentClaimId = null;
+    await loadQueue();
+  } catch (err) {
+    alert("Decision failed: " + err);
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+  }
+}
+
+$("approveBtn").addEventListener("click", () => decide("approve"));
+$("rejectBtn").addEventListener("click", () => decide("reject"));
+$("infoBtn").addEventListener("click", () => decide("request_info"));
+
+loadQueue();
+</script>
+</body>
+</html>

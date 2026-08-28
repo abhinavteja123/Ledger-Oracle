@@ -68,15 +68,22 @@ def rupees(paise: int) -> str:
 
 
 def amount_text(rng: random.Random, paise: int) -> str:
-    rupee_int = paise // 100
+    # Every format must carry the paise remainder when it's non-zero -- truncating to
+    # whole rupees (as every branch here used to do, even "decimal" hardcoding ".00")
+    # makes a *correct* parse of the text disagree with ground truth under
+    # AMOUNT_TOLERANCE_PAISE=0, turning real TRUE claims into false AMOUNT_MISMATCH
+    # blocks system-wide. Found live: ablation run B predicted zero "pass" across all
+    # 58 dev-set claims. See FAILURES.md.
+    rupees, cents = divmod(paise, 100)
     fmt = rng.choice(["plain", "rs_comma", "slash", "decimal"])
+    cents_suffix = f".{cents:02d}" if cents else ""
     if fmt == "plain":
-        return str(rupee_int)
+        return f"{rupees}{cents_suffix}"
     if fmt == "rs_comma":
-        return f"Rs. {rupee_int:,}"
+        return f"Rs. {rupees:,}{cents_suffix}"
     if fmt == "slash":
-        return f"{rupee_int}/-"
-    return f"{rupee_int}.00"
+        return f"{rupees}{cents_suffix}/-"
+    return f"{rupees}.{cents:02d}"
 
 
 def utr_text(rng: random.Random, utr: str) -> str:

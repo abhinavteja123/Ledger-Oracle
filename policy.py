@@ -40,6 +40,25 @@ def _latest(state: InvestigationState, cls):
     return items[-1] if items else None
 
 
+def _status_matches(state: InvestigationState, ref: Optional[str]) -> list:
+    """CaptureRows found via check_payment_status whose own utr matches ref.
+
+    check_payment_status wasn't primarily built for reference resolution (PRD 7.2
+    describes it as a settlement-status check), but if the agent calls it and the
+    returned capture's UTR happens to match the claimed reference, that legitimately
+    resolves I2 too. Found live: the agent chose this tool over get_payment_by_utr and
+    gathered exactly the right evidence, which decide() was structurally blind to
+    before this fix. See FAILURES.md.
+    """
+    if ref is None:
+        return []
+    out = []
+    for r in _all(state, PaymentStatusResult):
+        if r.found and r.capture and _normalize_ref(r.capture.utr) == ref:
+            out.append(r.capture)
+    return out
+
+
 def decidable(state: InvestigationState) -> bool:
     """Can decide() reach a verdict from the evidence gathered so far?
 
@@ -49,9 +68,20 @@ def decidable(state: InvestigationState) -> bool:
     """
     if state.extracted is None:
         return False
+    claim = state.extracted
     lookup = _latest(state, PaymentLookupResult)
     order_payments = _latest(state, OrderPaymentsResult)
     dup_check = _latest(state, DuplicateCheckResult)
+    if claim.claimed_reference is not None:
+        # decide()'s I2 branch specifically requires a PaymentLookupResult (or a
+        # matching check_payment_status result, see _status_matches) when a reference
+        # is claimed -- order-level evidence alone can't resolve it. Found live: the
+        # agent called get_order_payments first, decidable() said "ready" on that
+        # alone, and decide() then escalated TOOL_UNAVAILABLE on a claim that would
+        # have correctly resolved (often to pass) if get_payment_by_utr had run.
+        # See FAILURES.md.
+        ref = _normalize_ref(claim.claimed_reference)
+        return lookup is not None or bool(_status_matches(state, ref))
     return any([lookup, order_payments, dup_check])
 
 
@@ -128,6 +158,9 @@ def decide(state: InvestigationState, consumed_references: frozenset = frozenset
         all_captures.extend(lr.matches)
     if order_payments:
         all_captures.extend(order_payments.captures)
+    for sr in _all(state, PaymentStatusResult):
+        if sr.found and sr.capture:
+            all_captures.append(sr.capture)
     seen_by_id: dict[str, CaptureRow] = {}
     for c in all_captures:
         prior = seen_by_id.get(c.capture_id)
@@ -161,13 +194,19 @@ def decide(state: InvestigationState, consumed_references: frozenset = frozenset
     )
 
     if ref is not None:
-        if lookup is None:
+        status_matches = _status_matches(state, ref)
+        if lookup is None and not status_matches:
             return _escalate(
                 "TOOL_UNAVAILABLE", invariants,
                 "Claim named a reference but no lookup evidence was gathered for it.", degraded,
             )
-        exact = lookup.matches
-        near = lookup.near_matches
+        exact = list(lookup.matches) if lookup else []
+        near = list(lookup.near_matches) if lookup else []
+        seen_ids = {c.capture_id for c in exact}
+        for c in status_matches:
+            if c.capture_id not in seen_ids:
+                exact.append(c)
+                seen_ids.add(c.capture_id)
         if len(exact) > 1:
             invariants.append(InvariantResult(
                 invariant="I2", passed=False, detail="reference matches more than one capture",

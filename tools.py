@@ -9,6 +9,7 @@ driver and by a test, not by convention.
 import sqlite3
 import time
 
+from config import FUZZ_DISTANCE
 from models import (
     CaptureRow,
     DuplicateCheckResult,
@@ -21,7 +22,9 @@ from models import (
 )
 
 DB_PATH = "data/ledger.db"
-FUZZ_DISTANCE = 1  # edit-distance threshold for near-match UTRs (typo case, PRD 17.3)
+# FUZZ_DISTANCE's default comes from config.py (PRD 16.2 -- "the constitution, shown in
+# the demo"). It's still a plain module-level name here, not re-read from config live,
+# so eval/sweep.py patches `tools.FUZZ_DISTANCE` directly to vary it between runs.
 DUPLICATE_WINDOW_SECONDS = 15 * 60
 
 TOOL_REGISTRY: dict[str, dict] = {}
