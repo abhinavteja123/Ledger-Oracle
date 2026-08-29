@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: ledger-oracle
+    env: docker
+    plan: free
+    envVars:
+      - key: LEDGER_BACKEND
+        value: supabase
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: SUPABASE_DB_URL
+        sync: false
+      - key: SUPABASE_READONLY_DB_URL
+        sync: false

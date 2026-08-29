@@ -200,7 +200,15 @@ def decide(state: InvestigationState, consumed_references: frozenset = frozenset
                 "TOOL_UNAVAILABLE", invariants,
                 "Claim named a reference but no lookup evidence was gathered for it.", degraded,
             )
-        exact = list(lookup.matches) if lookup else []
+        # Filter to rows whose own utr actually matches the claimed reference -- the
+        # agent chooses get_payment_by_utr's search arg itself (agent.py:next_action),
+        # nothing constrains it to equal claim.claimed_reference, so a wrong-UTR search
+        # (LLM confusion or an injection attempt in the claim text) must not be able to
+        # smuggle in a real-but-unrelated capture as if it verified this claim's own
+        # reference. Same class of bug _status_matches already guards against for
+        # check_payment_status (see its docstring, FAILURES.md) -- get_payment_by_utr's
+        # matches never got the equivalent check.
+        exact = [c for c in (lookup.matches if lookup else []) if _normalize_ref(c.utr) == ref]
         near = list(lookup.near_matches) if lookup else []
         seen_ids = {c.capture_id for c in exact}
         for c in status_matches:

@@ -70,3 +70,13 @@ GRANT USAGE ON SCHEMA public TO ledger_reader;
 GRANT SELECT ON captures, refunds, consumed_references TO ledger_reader;
 -- Deliberately NOT granted: INSERT/UPDATE/DELETE on anything, and no access at all
 -- to claims_history (that table is written only by the app's owner connection).
+
+-- New Supabase projects auto-enable Row Level Security on tables created via the SQL
+-- editor. With RLS on and no policy, a non-owner role (ledger_reader) sees ZERO rows
+-- even though GRANT SELECT succeeded -- found live, this silently broke the admin
+-- dashboard's ledger browser. GRANT SELECT above already provides the intended
+-- restriction (read-only, three tables only), so RLS is redundant here, not a
+-- security gap being removed -- disable it rather than authoring matching policies.
+ALTER TABLE captures DISABLE ROW LEVEL SECURITY;
+ALTER TABLE refunds DISABLE ROW LEVEL SECURITY;
+ALTER TABLE consumed_references DISABLE ROW LEVEL SECURITY;

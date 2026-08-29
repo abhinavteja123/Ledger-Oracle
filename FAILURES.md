@@ -371,3 +371,78 @@ same shared budget as the "real" run. The most trustworthy real numbers from thi
 session are the ones captured *before* the quota ran out (see README's Results
 section); a clean final run should wait for the daily quota to reset (or use a second
 key) and be run once, not iterated on.
+
+## 2026-08-28 — Supabase direct-connection host is IPv6-only
+
+**Symptom.** `SUPABASE_DB_URL`/`SUPABASE_READONLY_DB_URL` set to the direct connection
+string (`postgresql://postgres:...@db.<project-ref>.supabase.co:5432/postgres`) failed
+with `could not translate host name ... to address: Name or service not known`.
+
+**What was actually true.** `nslookup` showed the host resolves only to an IPv6
+address. This network (a university campus network) had no IPv6 route out. Not a
+Supabase or credentials problem.
+
+**Fix.** Switched to Supabase's **pooler** connection string
+(`aws-0-<region>.pooler.supabase.com:5432` or `:6543`, IPv4-reachable). Username
+changes format in pooler mode: `<role>.<project-ref>` instead of plain `<role>`
+(e.g. `postgres.yngbbsrzxpimvogtqvpm`, `ledger_reader.yngbbsrzxpimvogtqvpm`).
+
+**What I'd do differently.** Should have tried raw `nslookup`/socket-level TCP
+connectivity before assuming a credentials issue -- the first symptom (DNS resolution
+failure) already pointed at network, not auth, and jumping straight to "check the
+password" would have wasted a round trip.
+
+## 2026-08-28 — Supabase auto-enabled RLS silently zeroed out ledger_reader's SELECTs
+
+**Symptom.** After fixing connectivity, `ledger_reader` could authenticate and run
+queries with no error, but every query against `captures`/`refunds`/
+`consumed_references` returned zero rows -- even though the owner connection confirmed
+500+ rows existed, and `GRANT SELECT ... TO ledger_reader` had already been run.
+
+**What I assumed.** `GRANT SELECT` alone was sufficient to make the tables readable by
+`ledger_reader`, since that's all standard Postgres needs.
+
+**What was actually true.** Supabase auto-enables Row Level Security on tables created
+through its SQL editor (a project-level default, not something `supabase/schema.sql`
+asked for). With RLS on and zero policies defined, Postgres denies all rows to any
+role except the table owner -- a `GRANT` doesn't override RLS; RLS is evaluated in
+addition to grants, and a table with RLS on and no permissive policy is default-deny
+for everyone but the owner. `SELECT relrowsecurity FROM pg_class` confirmed all three
+tables had it enabled.
+
+**Fix.** `ALTER TABLE captures/refunds/consumed_references DISABLE ROW LEVEL
+SECURITY`. Not a security downgrade here -- `GRANT SELECT` already scopes
+`ledger_reader` to exactly these three read-only tables, so RLS was redundant, not the
+thing providing the restriction. Added the same `ALTER TABLE` statements to
+`supabase/schema.sql` so a fresh run of the script won't hit this again.
+
+**What I'd do differently.** "GRANT SELECT succeeded, no error" was treated as proof
+the read path worked -- it wasn't. Should have checked `pg_class.relrowsecurity`
+immediately when the query silently returned zero rows instead of an error, rather
+than re-testing the same query repeatedly assuming a connection-string or
+role-creation mistake. A silent zero-rows result with no exception is exactly the kind
+of failure that looks like "it worked, there's just no data" and needs to be
+distrusted the same way an unexpectedly perfect number does.
+
+## 2026-08-28 — Admin dashboard silently missed parse-failure and MODEL_UNAVAILABLE escalates
+
+**Symptom.** Live-testing `/verify` against the real Supabase-backed deployment: a
+call that hit `MODEL_UNAVAILABLE` returned the correct escalate response, but never
+showed up in `/admin/claims` afterward.
+
+**What was actually true.** `app.py`'s `/verify` handler has two early-return paths
+(`except ParseFailedError`, `except CEREBRAS_ERRORS`) that build an escalate-shaped
+JSON response directly, before an `InvestigationState`/`Verdict` object ever exists --
+and `history_store.record(...)` was only called later, on the normal success path.
+Every parse failure or model-unavailable escalate was invisible to the admin
+dashboard, which is exactly the failure mode an admin most needs visibility into.
+
+**Fix.** Both early-exit branches in `app.py`'s `/verify` now construct a minimal
+`InvestigationState`/`Verdict` and call `history_store.record(...)` before returning,
+wrapped in the same try/except-and-ignore pattern the main path already uses (history
+logging must never block the decision response).
+
+**What I'd do differently.** The `HistoryStore.record()` call being present on the
+"happy path" doesn't mean it's present on every path that returns a response --
+should have grepped every `return` statement in the handler for whether it went
+through the logging call, not assumed one code path implied all of them did.

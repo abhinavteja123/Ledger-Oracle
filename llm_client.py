@@ -79,5 +79,11 @@ def get_client():
             raise CerebrasError(
                 "no LLM provider configured -- set GROQ_API_KEY and/or CEREBRAS_API_KEY"
             )
-        _client = providers[0][1] if len(providers) == 1 else _FallbackClient(providers)
+        # Always wrap, even for one provider -- _FallbackClient is also what applies
+        # _PROVIDER_MODEL_IDS's per-provider model remap and normalizes every
+        # provider's own exception type to CerebrasError. A bare single-provider
+        # client skips both: found live when Cerebras was disabled and Groq-only
+        # requests 404'd on the un-remapped bare model id, uncaught by
+        # `except CerebrasError` anywhere in agent.py/app.py.
+        _client = _FallbackClient(providers)
     return _client

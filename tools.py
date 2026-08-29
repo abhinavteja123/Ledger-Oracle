@@ -9,6 +9,7 @@ driver and by a test, not by convention.
 import sqlite3
 import time
 
+import db
 from config import FUZZ_DISTANCE
 from models import (
     CaptureRow,
@@ -41,10 +42,8 @@ def tool(mutates: bool):
     return decorator
 
 
-def _connect(db_path: str = DB_PATH) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
+def _connect(db_path: str = DB_PATH):
+    return db.get_readonly_connection(db_path)
 
 
 def _row_to_capture(row: sqlite3.Row) -> CaptureRow:
@@ -103,7 +102,7 @@ def get_payment_by_utr(utr: str, *, db_path: str = DB_PATH) -> PaymentLookupResu
     start = time.monotonic()
     try:
         conn = _connect(db_path)
-    except sqlite3.OperationalError as e:
+    except db.connection_errors() as e:
         return ToolError(tool="get_payment_by_utr", error_class="unavailable", attempt=1, detail=str(e))
     try:
         connected = conn.execute(
@@ -138,7 +137,7 @@ def get_order_payments(order_id: str, *, db_path: str = DB_PATH) -> OrderPayment
     start = time.monotonic()
     try:
         conn = _connect(db_path)
-    except sqlite3.OperationalError as e:
+    except db.connection_errors() as e:
         return ToolError(tool="get_order_payments", error_class="unavailable", attempt=1, detail=str(e))
     try:
         connected = conn.execute(
@@ -166,7 +165,7 @@ def find_duplicate_captures(order_id: str, *, db_path: str = DB_PATH) -> Duplica
     start = time.monotonic()
     try:
         conn = _connect(db_path)
-    except sqlite3.OperationalError as e:
+    except db.connection_errors() as e:
         return ToolError(tool="find_duplicate_captures", error_class="unavailable", attempt=1, detail=str(e))
     try:
         rows = conn.execute(
@@ -203,7 +202,7 @@ def check_refund_history(order_id: str, *, db_path: str = DB_PATH) -> RefundHist
     start = time.monotonic()
     try:
         conn = _connect(db_path)
-    except sqlite3.OperationalError as e:
+    except db.connection_errors() as e:
         return ToolError(tool="check_refund_history", error_class="unavailable", attempt=1, detail=str(e))
     try:
         rows = conn.execute("SELECT * FROM refunds WHERE order_id=?", (order_id,)).fetchall()
@@ -225,7 +224,7 @@ def check_payment_status(capture_id: str, *, db_path: str = DB_PATH) -> PaymentS
     start = time.monotonic()
     try:
         conn = _connect(db_path)
-    except sqlite3.OperationalError as e:
+    except db.connection_errors() as e:
         return ToolError(tool="check_payment_status", error_class="unavailable", attempt=1, detail=str(e))
     try:
         # ledger_source='connected' only -- a capture_id the tool layer never handed out

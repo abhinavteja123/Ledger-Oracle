@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ledger Oracle</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    margin: 0; padding: 0; background: #0b0d10; color: #d8dee4;
+    min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; font-size: 14px; line-height: 1.4;
+  }
+  h1 { font-size: 22px; letter-spacing: 0.08em; margin: 0 0 4px; }
+  .tagline { color: #888; font-size: 13px; margin-bottom: 40px; text-align: center; max-width: 480px; }
+  .roles { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; padding: 0 16px; }
+  a.role-card {
+    display: block; width: 260px; border: 1px solid #333; background: #12151a;
+    padding: 24px 20px; text-decoration: none; color: inherit; transition: border-color 0.15s;
+  }
+  a.role-card:hover { border-color: #666; }
+  .role-card .label { font-size: 16px; font-weight: bold; letter-spacing: 0.05em; margin-bottom: 8px; }
+  .role-card.user .label { color: #66bb6a; }
+  .role-card.admin .label { color: #d4a017; }
+  .role-card .desc { color: #999; font-size: 12px; }
+  footer { margin-top: 48px; color: #555; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<h1>LEDGER ORACLE</h1>
+<div class="tagline">A bounded investigation agent gathers evidence about a refund claim; a deterministic policy engine decides. Pick a role to explore the demo.</div>
+
+<div class="roles">
+  <a class="role-card user" href="/verify-page">
+    <div class="label">DEMO USER</div>
+    <div class="desc">Submit a refund claim and see the verdict: pass, block, or escalate -- with the full investigation trace.</div>
+  </a>
+  <a class="role-card admin" href="/admin">
+    <div class="label">DEMO ADMIN</div>
+    <div class="desc">Browse every claim ever processed, the raw ledger tables, and the tamper-evident audit trail.</div>
+  </a>
+</div>
+
+<footer>No login required -- this is a demo. Pick a role above.</footer>
+
+</body>
+</html>

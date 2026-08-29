@@ -112,6 +112,7 @@ def client_app(tmp_path, monkeypatch):
     import app as app_module
     app_module.REVIEW_QUEUE.clear()
     app_module.APPROVED_REFERENCES.clear()
+    app_module.history_store._rows.clear()
     return TestClient(app_module.app)
 
 
@@ -178,11 +179,75 @@ def test_missing_ledger_db_does_not_crash(tmp_path, monkeypatch):
     import app as app_module
     app_module.REVIEW_QUEUE.clear()
     app_module.APPROVED_REFERENCES.clear()
+    app_module.history_store._rows.clear()
     client = TestClient(app_module.app)
     _install_fake_client(monkeypatch, CLAIM_JSON, [("get_payment_by_utr", '{"utr": "111111111111"}')] * 6)
     res = client.post("/verify", json={"text": "paid 2499, UTR 111111111111"})
     assert res.status_code == 200
     assert res.json()["decision"] != "pass"  # tools all fail against a missing DB -> never a false pass
+
+
+def test_admin_claims_lists_every_decision_not_just_escalates(client_app, monkeypatch):
+    _install_fake_client(monkeypatch, CLAIM_JSON, [("get_payment_by_utr", '{"utr": "111111111111"}')])
+    client_app.post("/verify", json={"text": "paid 2499, UTR 111111111111"})
+    _install_fake_client(monkeypatch, BLOCK_CLAIM_JSON, [("get_payment_by_utr", '{"utr": "999999999999"}')])
+    client_app.post("/verify", json={"text": "paid via UTR 999999999999"})
+
+    resp = client_app.get("/admin/claims")
+    assert resp.status_code == 200
+    claims = resp.json()["claims"]
+    assert len(claims) == 2
+    assert {c["decision"] for c in claims} == {"pass", "block"}
+
+
+def test_admin_claim_detail_matches_verify_response(client_app, monkeypatch):
+    _install_fake_client(monkeypatch, CLAIM_JSON, [("get_payment_by_utr", '{"utr": "111111111111"}')])
+    v = client_app.post("/verify", json={"text": "paid 2499, UTR 111111111111"}).json()
+    claim_id = client_app.get("/admin/claims").json()["claims"][0]["claim_id"]
+    detail = client_app.get(f"/admin/claims/{claim_id}").json()
+    assert detail["decision"] == v["decision"]
+    assert detail["extracted"]["order_id"] == v["extracted"]["order_id"]
+
+
+def test_admin_ledger_browse_returns_rows(client_app):
+    resp = client_app.get("/admin/ledger/captures")
+    assert resp.status_code == 200
+    rows = resp.json()["rows"]
+    assert any(r["capture_id"] == "pay_1" for r in rows)
+
+
+def test_admin_ledger_browse_rejects_unknown_table(client_app):
+    resp = client_app.get("/admin/ledger/not_a_real_table")
+    assert resp.status_code == 400
+
+
+def test_admin_audit_returns_chain_status(client_app, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # audit.jsonl doesn't exist here
+    resp = client_app.get("/admin/audit")
+    assert resp.status_code == 200
+    assert "ok" in resp.json()
+
+
+def test_admin_approve_also_blocks_replay_via_verify(client_app, monkeypatch):
+    # Same loop-closing property as the /review/*-based test above, exercised through
+    # /admin/* instead, since /admin/* is meant to become the primary interface.
+    _install_fake_client(monkeypatch, json.dumps({
+        "claim_type": "payment_not_recorded", "order_id": "ord_1",
+        "claimed_reference": "111111111111", "claimed_amount_paise": 249900,
+        "claimed_instrument": "upi", "claimed_payee_vpa": None,
+        "claimed_timestamp_iso": None, "customer_asserts_count": None,
+    }), [])  # no tool calls -> undecidable -> escalates
+    escalated = client_app.post("/verify", json={"text": "paid 2499, UTR 111111111111"}).json()
+    assert escalated["decision"] == "escalate"
+
+    claim_id = client_app.get("/admin/claims?status=open").json()["claims"][0]["claim_id"]
+    resp = client_app.post(f"/admin/claims/{claim_id}/decide", json={"action": "approve", "note": "checked"})
+    assert resp.status_code == 200
+
+    _install_fake_client(monkeypatch, CLAIM_JSON, [("get_payment_by_utr", '{"utr": "111111111111"}')])
+    replay = client_app.post("/verify", json={"text": "paid 2499, UTR 111111111111 again"}).json()
+    assert replay["decision"] == "block"
+    assert replay["reason_code"] == "REF_ALREADY_CONSUMED"
 
 
 def test_llm_unavailable_does_not_crash(client_app, monkeypatch):

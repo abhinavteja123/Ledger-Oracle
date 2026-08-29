@@ -4,6 +4,7 @@ falls through on failure, raises CerebrasError only if every provider fails.
 import pytest
 from cerebras.cloud.sdk import CerebrasError
 
+import llm_client
 from llm_client import _FallbackClient
 
 
@@ -54,3 +55,22 @@ def test_each_provider_gets_its_own_model_id():
     client.chat.completions.create(model="gpt-oss-120b")
     assert p1.calls[0]["model"] == "openai/gpt-oss-120b"
     assert p2.calls[0]["model"] == "gpt-oss-120b"
+
+
+def test_get_client_wraps_single_provider_too(monkeypatch):
+    """Regression: a lone configured provider must still go through
+    _FallbackClient, so its model id gets remapped (Cerebras's bare
+    'gpt-oss-120b' isn't Groq's real id) and its own exception types get
+    normalized to CerebrasError -- a bare single-provider client skipped both,
+    causing a live 404 model_not_found (uncaught 500) with Groq-only config."""
+    monkeypatch.setattr(llm_client, "_client", None)
+    monkeypatch.setenv("GROQ_API_KEY", "fake-key-for-test")
+    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
+    # get_client() calls the real _load_dotenv(), which uses setdefault() and would
+    # otherwise leak LEDGER_BACKEND=supabase (and real Supabase URLs) from the repo's
+    # .env into the shared pytest process env for every test running after this one --
+    # pre-set it so that setdefault() is a no-op.
+    monkeypatch.setenv("LEDGER_BACKEND", "sqlite")
+    client = llm_client.get_client()
+    assert isinstance(client, _FallbackClient)
+    monkeypatch.setattr(llm_client, "_client", None)

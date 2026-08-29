@@ -8,3 +8,7 @@ data/ledger.db
 data/claims.jsonl
 data/MANIFEST.json
 .pytest_cache/
+.claude
+.playwright/
+.playwright-mcp/
+

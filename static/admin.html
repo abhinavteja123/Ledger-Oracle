@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ledger Oracle -- Admin</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    margin: 0; padding: 16px; background: #0b0d10; color: #d8dee4;
+    font-size: 14px; line-height: 1.4;
+  }
+  header { display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 12px; }
+  header h1 { font-size: 15px; margin: 0; letter-spacing: 0.05em; }
+  header a { color: #888; font-size: 12px; text-decoration: none; }
+  header a:hover { text-decoration: underline; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+  .tab-btn { background: #12151a; color: #888; border: 1px solid #333; padding: 6px 14px;
+    font-family: inherit; cursor: pointer; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .tab-btn.active { color: #d8dee4; border-color: #666; background: #1b2027; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  .layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  .panel { border: 1px solid #333; padding: 12px; background: #12151a; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: #888; margin: 0 0 8px; }
+  select { background: #0b0d10; color: #d8dee4; border: 1px solid #333; padding: 4px 6px;
+    font-family: inherit; font-size: 12px; margin-bottom: 8px; }
+  #claimsList, #ledgerSubtabs { list-style: none; margin: 0; padding: 0; }
+  #claimsList li { padding: 6px 8px; border: 1px solid #222; margin-bottom: 4px;
+    cursor: pointer; font-size: 12px; display: flex; justify-content: space-between; gap: 6px; }
+  #claimsList li:hover { background: #1b2027; }
+  #claimsList li.active { border-color: #d4a017; background: #1a1608; }
+  .badge { padding: 1px 6px; font-size: 10px; text-transform: uppercase; border: 1px solid; }
+  .badge-pass { color: #66bb6a; border-color: #2e7d32; }
+  .badge-block { color: #ef5350; border-color: #c62828; }
+  .badge-escalate { color: #d4a017; border-color: #b8860b; }
+  .placeholder { color: #666; font-style: italic; }
+  .why-stopped { border: 1px solid #d4a017; background: #1a1608; padding: 10px;
+    margin-bottom: 12px; font-size: 13px; }
+  .why-stopped .code { font-weight: bold; color: #d4a017; }
+  .section { margin-bottom: 14px; }
+  .section h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: #888; margin: 0 0 6px; border-bottom: 1px solid #222; padding-bottom: 4px; }
+  .claim-text { background: #0b0d10; border: 1px solid #222; padding: 8px; white-space: pre-wrap; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid #222; font-size: 12px; }
+  th { color: #888; font-weight: normal; }
+  .pass-cell { color: #66bb6a; }
+  .fail-cell { color: #ef5350; }
+  .row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; font-size: 12px; }
+  .row .k { color: #888; }
+  .why-not-block { border-left: 3px solid #d4a017; padding: 6px 8px; background: #1a1608; font-size: 12px; }
+  textarea#note { width: 100%; min-height: 50px; background: #0b0d10; color: #d8dee4;
+    border: 1px solid #333; padding: 6px; font-family: inherit; font-size: 13px; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  button { background: #1b2027; color: #d8dee4; border: 1px solid #444; padding: 8px 14px;
+    font-family: inherit; cursor: pointer; font-size: 12px; }
+  button:hover { background: #232a33; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .approve { border-color: #2e7d32; }
+  .reject { border-color: #c62828; }
+  .ledger-tabbar { display: flex; gap: 4px; margin-bottom: 8px; }
+  .audit-badge { display: inline-block; padding: 6px 16px; font-size: 15px; font-weight: bold;
+    letter-spacing: 0.05em; border: 1px solid; margin-bottom: 10px; }
+  .audit-ok { color: #66bb6a; border-color: #2e7d32; background: #12210f; }
+  .audit-failed { color: #ef5350; border-color: #c62828; background: #250f0f; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>LEDGER ORACLE -- ADMIN</h1>
+  <a href="/">&larr; back to landing</a>
+</header>
+
+<div class="tabs">
+  <button class="tab-btn active" data-tab="claims">Claims</button>
+  <button class="tab-btn" data-tab="ledger">Ledger</button>
+  <button class="tab-btn" data-tab="audit">Audit</button>
+</div>
+
+<div id="tab-claims" class="tab-panel active">
+  <div class="layout">
+    <div class="panel">
+      <h2>Claims</h2>
+      <select id="statusFilter">
+        <option value="">all statuses</option>
+        <option value="open">open</option>
+        <option value="closed">closed</option>
+        <option value="decided">decided</option>
+      </select>
+      <select id="decisionFilter">
+        <option value="">all decisions</option>
+        <option value="pass">pass</option>
+        <option value="block">block</option>
+        <option value="escalate">escalate</option>
+      </select>
+      <ul id="claimsList"><li class="placeholder">loading...</li></ul>
+    </div>
+
+    <div class="panel">
+      <div id="detailEmpty" class="placeholder">-- select a claim from the list --</div>
+
+      <div id="detail" style="display:none;">
+        <div class="why-stopped">
+          <div>WHY AUTOMATION STOPPED</div>
+          <div class="code" id="whyStoppedCode">--</div>
+          <div id="whyStoppedText"></div>
+        </div>
+
+        <div class="section">
+          <h3>Customer claim</h3>
+          <div class="claim-text" id="rawClaim"></div>
+        </div>
+
+        <div class="section">
+          <h3>Extracted</h3>
+          <div id="extractedFields"></div>
+        </div>
+
+        <div class="section">
+          <h3>Investigation</h3>
+          <table id="toolsTable">
+            <thead><tr><th>#</th><th>tool</th><th>result</th><th>latency</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div class="section">
+          <h3>Invariants</h3>
+          <table id="invariantsTable">
+            <thead><tr><th>invariant</th><th>status</th><th>detail</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div class="section">
+          <div class="why-not-block" id="whyNotBlock"></div>
+        </div>
+
+        <div class="section" id="decisionSection">
+          <h3>Decision</h3>
+          <textarea id="note" placeholder="reviewer note..."></textarea>
+          <div class="actions">
+            <button class="approve" id="approveBtn">APPROVE</button>
+            <button class="reject" id="rejectBtn">REJECT</button>
+            <button id="infoBtn">REQUEST MORE INFO</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="tab-ledger" class="tab-panel">
+  <div class="panel">
+    <h2>Ledger tables (read-only)</h2>
+    <div class="ledger-tabbar">
+      <button class="tab-btn active" data-ledger-table="captures">Captures</button>
+      <button class="tab-btn" data-ledger-table="refunds">Refunds</button>
+      <button class="tab-btn" data-ledger-table="consumed_references">Consumed References</button>
+    </div>
+    <div id="ledgerTableWrap">loading...</div>
+  </div>
+</div>
+
+<div id="tab-audit" class="tab-panel">
+  <div class="panel">
+    <h2>Audit chain</h2>
+    <div id="auditBadge" class="audit-badge">--</div>
+    <div id="auditDetail"></div>
+    <div class="actions"><button id="recheckAudit">Re-check</button></div>
+  </div>
+</div>
+
+<script>
+/*
+ * Real endpoint shapes (confirmed against app.py, not the plan's guess):
+ *   GET /admin/claims?status=      -> { claims: [ <same shape as /admin/claims/{id}> ] }
+ *     (server filters by status only: open|closed|decided; decision is filtered client-side)
+ *   GET /admin/claims/{claim_id}   -> {
+ *     claim_id, status, raw_message, sanitizer_flags, stop_reason, stop_reason_text,
+ *     resolved_reference, created_at, decision_action, decision_note,
+ *     decision, reason_code, max_refundable_paise, why_not_block,
+ *     extracted, tools_called, evidence, invariants, engine_version, tolerance_config
+ *   }
+ *   POST /admin/claims/{claim_id}/decide  body {action, note} -> {ok:true} | 404 {error}
+ *   GET /admin/ledger/{table}      -> { rows: [...] } | 400 {error} | 200 {error} (backend down)
+ *   GET /admin/audit?path=         -> { ok, break_at, detail }
+ */
+
+const $ = (id) => document.getElementById(id);
+let currentClaimId = null;
+let allClaims = [];
+
+// ---- tab switching ----
+document.querySelectorAll(".tabs > .tab-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tabs > .tab-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+    btn.classList.add("active");
+    $("tab-" + btn.dataset.tab).classList.add("active");
+  });
+});
+
+// ---- shared rendering helpers (same convention as review.html) ----
+function rupees(paise) {
+  if (paise === null || paise === undefined) return "--";
+  return "Rs " + (paise / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+}
+
+function summarizeEvidence(ev) {
+  if (!ev) return "--";
+  if (ev.matches) return ev.matches.length + " match(es), " + (ev.near_matches?.length ?? 0) + " near";
+  if (ev.captures) return ev.captures.length + " capture(s)";
+  if (ev.refunds) return ev.refunds.length + " refund(s)";
+  if (ev.duplicate_pairs) return ev.duplicate_pairs.length + " duplicate pair(s)";
+  if (ev.found !== undefined) return ev.found ? "found" : "not found";
+  if (ev.error_class) return "ERROR: " + ev.error_class;
+  return "--";
+}
+
+// ---- Claims tab ----
+async function loadClaims() {
+  const list = $("claimsList");
+  const status = $("statusFilter").value;
+  try {
+    const qs = status ? "?status=" + encodeURIComponent(status) : "";
+    const res = await fetch("/admin/claims" + qs);
+    const data = await res.json();
+    allClaims = data.claims || [];
+    renderClaimsList();
+  } catch (err) {
+    list.innerHTML = '<li class="fail-cell">failed to load: ' + err + '</li>';
+  }
+}
+
+function renderClaimsList() {
+  const list = $("claimsList");
+  const decisionFilter = $("decisionFilter").value;
+  const claims = decisionFilter ? allClaims.filter((c) => c.decision === decisionFilter) : allClaims;
+  if (!claims.length) {
+    list.innerHTML = '<li class="placeholder">no claims</li>';
+    return;
+  }
+  list.innerHTML = claims.map((c) => {
+    const badge = '<span class="badge badge-' + (c.decision || "escalate") + '">' + (c.decision || "?") + '</span>';
+    return '<li data-id="' + c.claim_id + '"><span>' + c.claim_id + '<br><span class="placeholder">' +
+      (c.reason_code ?? c.status ?? "") + '</span></span>' + badge + '</li>';
+  }).join("");
+  list.querySelectorAll("li[data-id]").forEach((li) => {
+    li.addEventListener("click", () => selectClaim(li.dataset.id, li));
+  });
+}
+
+async function selectClaim(claimId, liEl) {
+  currentClaimId = claimId;
+  document.querySelectorAll("#claimsList li").forEach((li) => li.classList.remove("active"));
+  if (liEl) liEl.classList.add("active");
+
+  $("detailEmpty").style.display = "none";
+  $("detail").style.display = "block";
+
+  try {
+    const res = await fetch("/admin/claims/" + encodeURIComponent(claimId));
+    const d = await res.json();
+    renderDetail(d);
+  } catch (err) {
+    $("whyStoppedText").textContent = "failed to load claim: " + err;
+  }
+}
+
+function renderDetail(d) {
+  $("whyStoppedCode").textContent = d.stop_reason ?? d.reason_code ?? "--";
+  $("whyStoppedText").textContent = d.stop_reason_text ?? "";
+  $("rawClaim").textContent = d.raw_message ?? "--";
+
+  const extracted = d.extracted;
+  const fields = ["claim_type", "order_id", "claimed_reference", "claimed_amount_paise", "claimed_instrument"];
+  $("extractedFields").innerHTML = extracted
+    ? fields.map((f) => {
+        let val = extracted[f];
+        if (f === "claimed_amount_paise" && val != null) val = rupees(val);
+        return '<div class="row"><span class="k">' + f + '</span><span>' + (val ?? "--") + '</span></div>';
+      }).join("")
+    : '<span class="placeholder">-- did not parse --</span>';
+
+  const toolsBody = $("toolsTable").querySelector("tbody");
+  const tools = d.tools_called || [];
+  toolsBody.innerHTML = tools.length
+    ? tools.map((tc, i) => {
+        const ev = (d.evidence && d.evidence[i]) || {};
+        const latency = ev.query_latency_ms != null ? ev.query_latency_ms + "ms" : "--";
+        return '<tr><td>' + (i + 1) + '</td><td>' + (tc.tool ?? "--") + '</td><td>' +
+          summarizeEvidence(ev) + '</td><td>' + latency + '</td></tr>';
+      }).join("")
+    : '<tr><td colspan="4" class="placeholder">no tool calls</td></tr>';
+
+  const invBody = $("invariantsTable").querySelector("tbody");
+  const invariants = d.invariants || [];
+  invBody.innerHTML = invariants.length
+    ? invariants.map((inv) => {
+        const cls = inv.passed ? "pass-cell" : "fail-cell";
+        return '<tr><td>' + inv.invariant + '</td><td class="' + cls + '">' +
+          (inv.passed ? "OK" : "FAIL") + '</td><td>' + (inv.detail ?? "") + '</td></tr>';
+      }).join("")
+    : '<tr><td colspan="3" class="placeholder">no invariants</td></tr>';
+
+  $("whyNotBlock").textContent = "WHY NOT BLOCK: " + (d.why_not_block ?? "--");
+  $("note").value = "";
+
+  const decisionButtons = [$("approveBtn"), $("rejectBtn"), $("infoBtn")];
+  const openForDecision = d.status === "open";
+  decisionButtons.forEach((b) => (b.disabled = !openForDecision));
+}
+
+async function decide(action) {
+  if (!currentClaimId) return;
+  const buttons = [$("approveBtn"), $("rejectBtn"), $("infoBtn")];
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    await fetch("/admin/claims/" + encodeURIComponent(currentClaimId) + "/decide", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, note: $("note").value }),
+    });
+    $("detail").style.display = "none";
+    $("detailEmpty").style.display = "block";
+    $("detailEmpty").textContent = "-- select a claim from the list --";
+    currentClaimId = null;
+    await loadClaims();
+  } catch (err) {
+    alert("Decision failed: " + err);
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+  }
+}
+
+$("approveBtn").addEventListener("click", () => decide("approve"));
+$("rejectBtn").addEventListener("click", () => decide("reject"));
+$("infoBtn").addEventListener("click", () => decide("request_info"));
+$("statusFilter").addEventListener("change", loadClaims);
+$("decisionFilter").addEventListener("change", renderClaimsList);
+
+// ---- Ledger tab ----
+async function loadLedgerTable(table) {
+  const wrap = $("ledgerTableWrap");
+  wrap.textContent = "loading...";
+  try {
+    const res = await fetch("/admin/ledger/" + encodeURIComponent(table));
+    const data = await res.json();
+    if (data.error) {
+      wrap.innerHTML = '<span class="fail-cell">' + data.error + '</span>';
+      return;
+    }
+    const rows = data.rows || [];
+    if (!rows.length) {
+      wrap.innerHTML = '<span class="placeholder">no rows</span>';
+      return;
+    }
+    const cols = Object.keys(rows[0]);
+    wrap.innerHTML =
+      '<table><thead><tr>' + cols.map((c) => '<th>' + c + '</th>').join("") + '</tr></thead><tbody>' +
+      rows.map((r) => '<tr>' + cols.map((c) => '<td>' + (r[c] ?? "") + '</td>').join("") + '</tr>').join("") +
+      '</tbody></table>';
+  } catch (err) {
+    wrap.innerHTML = '<span class="fail-cell">failed to load: ' + err + '</span>';
+  }
+}
+
+document.querySelectorAll(".ledger-tabbar .tab-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".ledger-tabbar .tab-btn").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    loadLedgerTable(btn.dataset.ledgerTable);
+  });
+});
+
+// ---- Audit tab ----
+async function loadAudit() {
+  const badge = $("auditBadge");
+  const detail = $("auditDetail");
+  badge.textContent = "checking...";
+  badge.className = "audit-badge";
+  try {
+    const res = await fetch("/admin/audit");
+    const d = await res.json();
+    badge.textContent = d.ok ? "AUDIT INTEGRITY: OK" : "AUDIT INTEGRITY: FAILED";
+    badge.className = "audit-badge " + (d.ok ? "audit-ok" : "audit-failed");
+    detail.textContent = d.detail ?? (d.break_at ? "break at event " + d.break_at : "");
+  } catch (err) {
+    badge.textContent = "AUDIT CHECK FAILED";
+    badge.className = "audit-badge audit-failed";
+    detail.textContent = String(err);
+  }
+}
+
+$("recheckAudit").addEventListener("click", loadAudit);
+
+// ---- init ----
+loadClaims();
+loadLedgerTable("captures");
+loadAudit();
+</script>
+</body>
+</html>

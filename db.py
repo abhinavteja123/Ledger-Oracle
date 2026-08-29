@@ -36,6 +36,18 @@ def backend() -> str:
     return os.environ.get("LEDGER_BACKEND", "sqlite")
 
 
+def connection_errors() -> tuple:
+    """Exception types get_readonly_connection/get_owner_connection can raise on
+    failure, so callers (tools.py) can catch the right ones per backend without a
+    hard psycopg2 import when running sqlite-only. Mirrors agent.py's
+    CEREBRAS_ERRORS -- same class of gap (a backend added later needs its errors
+    added to every except clause written for the original backend)."""
+    if backend() == "supabase":
+        import psycopg2
+        return (sqlite3.OperationalError, psycopg2.Error)
+    return (sqlite3.OperationalError,)
+
+
 def get_readonly_connection(db_path: str):
     """Read-only connection for tools.py. sqlite: file:...?mode=ro, unchanged from
     the original implementation. supabase: a Postgres connection using the

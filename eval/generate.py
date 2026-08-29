@@ -208,6 +208,39 @@ def order_headroom(order_id: str, captures: list, refunds: list) -> int:
 
 
 def write_ledger_db(path: Path, captures: list, refunds: list, consumed_references: list):
+    import db as db_module
+
+    if db_module.backend() == "supabase":
+        # Schema + read-only role are created once via supabase/schema.sql (Task 1),
+        # not here -- this just clears and reseeds the three tables. db.py's execute()
+        # only supports single-row ?-placeholder calls (no executemany, no :name
+        # params), so this loops row-by-row instead of using sqlite3's executemany.
+        conn = db_module.get_owner_connection()
+        conn.execute("TRUNCATE captures, refunds, consumed_references CASCADE", ())
+        for c in captures:
+            conn.execute(
+                "INSERT INTO captures (capture_id,order_id,amount_paise,instrument,"
+                "utr,payee_vpa,captured_at,settled_at,ledger_source) VALUES (?,?,?,?,?,?,?,?,?)",
+                (c["capture_id"], c["order_id"], c["amount_paise"], c["instrument"],
+                 c["utr"], c["payee_vpa"], c["captured_at"], c["settled_at"], c["ledger_source"]),
+            )
+        for r in refunds:
+            conn.execute(
+                "INSERT INTO refunds (refund_id,order_id,capture_id,amount_paise,"
+                "issued_at,channel) VALUES (?,?,?,?,?,?)",
+                (r["refund_id"], r["order_id"], r["capture_id"], r["amount_paise"],
+                 r["issued_at"], r["channel"]),
+            )
+        for cr in consumed_references:
+            conn.execute(
+                "INSERT INTO consumed_references (reference,consumed_by,consumed_at,"
+                "approved_by) VALUES (?,?,?,?)",
+                (cr["reference"], cr["consumed_by"], cr["consumed_at"], cr["approved_by"]),
+            )
+        conn.commit()
+        conn.close()
+        return
+
     if path.exists():
         path.unlink()
     conn = sqlite3.connect(path)
