@@ -157,6 +157,12 @@ def summarize(manifest: list[dict], verdicts: dict) -> dict:
     escalation_recall = tp_escalate / n_escalate if n_escalate else None
     false_accusation_rate = fp_c / n_escalate if n_escalate else None
 
+    # Headline safety metric (PRD 5.1's core claim, made measurable): actual is
+    # block/escalate but the engine predicted pass, on a PLAIN run -- no fault injected.
+    # Same list-comprehension logic as score_with_fault()'s `unsafe`, just computed here
+    # too so every run (not only --inject-failure runs) reports it.
+    unsafe_pass = [r for r in rows if r["predicted"] == "pass" and r["actual"] != "pass"]
+
     return {
         "matrix": matrix,
         "n_claims": len(manifest),
@@ -169,6 +175,8 @@ def summarize(manifest: list[dict], verdicts: dict) -> dict:
         "n_escalate_actual": n_escalate,
         "blocked_fraud_paise": blocked_fraud_paise,
         "total_fp_cost_paise": total_cost_paise,
+        "unsafe_pass_count": len(unsafe_pass),
+        "unsafe_pass_claim_ids": [r["claim_id"] for r in unsafe_pass],
         "rows": rows,
     }
 
@@ -199,6 +207,10 @@ def _fmt(x) -> str:
 def print_report(result: dict, label: str = "") -> None:
     if label:
         print(f"=== {label} ===")
+    print(f"unsafe_pass_count = {result['unsafe_pass_count']}   TARGET: 0")
+    if result["unsafe_pass_count"]:
+        print(f"  claim_ids: {result['unsafe_pass_claim_ids']}")
+    print()
     m = result["matrix"]
     print("                 PREDICTED")
     print(f"{'':>10}  {'pass':>8} {'block':>8} {'escalate':>9}")
@@ -223,7 +235,7 @@ def score_with_fault(data_dir: Path, mode: str, tool_name: str | None = None) ->
     db_unavailable, malformed_row, contradictory) -- the ones this engine-only,
     no-retry ablation-A path can meaningfully exercise. LLM-boundary faults
     (llm_unavailable, llm_invalid_json, llm_bad_tool_name, llm_bad_tool_args) need a
-    real agent run (eval/ablation.py's run C) with a live CEREBRAS_API_KEY.
+    real agent run (eval/ablation.py's run C) with a live GROQ_API_KEY or GEMINI_API_KEY.
 
     The fault fires on every call to `tool_name` (or every tool, if None) for the whole
     run -- there's no retry loop here to test "one-shot glitch, retry recovers" (that's
@@ -236,14 +248,16 @@ def score_with_fault(data_dir: Path, mode: str, tool_name: str | None = None) ->
     with inject_tool_failure(mode, tool_name=tool_name, always=True):
         result = score(data_dir)
 
-    unsafe = [r for r in result["rows"] if r["predicted"] == "pass" and r["actual"] != "pass"]
     correct_terminal = [
         r for r in result["rows"]
         if r["predicted"] == r["actual"] or r["predicted"] == "escalate"
     ]
     result["graceful_recovery_rate"] = len(correct_terminal) / len(result["rows"])
-    result["unsafe_failures"] = len(unsafe)
-    result["unsafe_failure_claim_ids"] = [r["claim_id"] for r in unsafe]
+    # summarize() already computed this exact (predicted==pass, actual!=pass) set as
+    # unsafe_pass_count/unsafe_pass_claim_ids -- reuse it under this function's existing
+    # name rather than recomputing the same list comprehension a second time.
+    result["unsafe_failures"] = result["unsafe_pass_count"]
+    result["unsafe_failure_claim_ids"] = result["unsafe_pass_claim_ids"]
     return result
 
 

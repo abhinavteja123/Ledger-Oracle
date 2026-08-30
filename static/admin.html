@@ -79,8 +79,9 @@
 
 <div class="tabs">
   <button class="tab-btn active" data-tab="claims">Claims</button>
-  <button class="tab-btn" data-tab="ledger">Ledger</button>
-  <button class="tab-btn" data-tab="audit">Audit</button>
+  <button class="tab-btn" data-tab="agreement">Engine vs Human</button>
+  <button class="tab-btn" data-tab="audit">Audit chain</button>
+  <button class="tab-btn" data-tab="ledger">Ledger (raw tables)</button>
 </div>
 
 <div id="tab-claims" class="tab-panel active">
@@ -107,9 +108,10 @@
 
       <div id="detail" style="display:none;">
         <div class="why-stopped">
-          <div>WHY AUTOMATION STOPPED</div>
-          <div class="code" id="whyStoppedCode">--</div>
+          <div id="decisionHeadline" style="font-size:14px; font-weight:bold; margin-bottom:4px;">--</div>
           <div id="whyStoppedText"></div>
+          <div class="row" style="margin-top:6px;"><span class="k">authorized up to</span><span id="authorizedUpTo">--</span></div>
+          <div class="row"><span class="k">reason code</span><span class="code" id="whyStoppedCode">--</span></div>
         </div>
 
         <div class="section">
@@ -143,22 +145,62 @@
         </div>
 
         <div class="section" id="decisionSection">
-          <h3>Decision</h3>
-          <textarea id="note" placeholder="reviewer note..."></textarea>
-          <div class="actions">
-            <button class="approve" id="approveBtn">APPROVE</button>
-            <button class="reject" id="rejectBtn">REJECT</button>
-            <button id="infoBtn">REQUEST MORE INFO</button>
+          <h3>Human review</h3>
+          <div id="decisionOpen">
+            <textarea id="note" placeholder="reviewer note..."></textarea>
+            <div class="actions">
+              <button class="approve" id="approveBtn">APPROVE</button>
+              <button class="reject" id="rejectBtn">REJECT</button>
+              <button id="infoBtn">REQUEST MORE INFO</button>
+            </div>
           </div>
+          <div id="decisionReadonly" style="display:none;" class="placeholder"></div>
         </div>
       </div>
     </div>
   </div>
 </div>
 
+<div id="tab-agreement" class="tab-panel">
+  <div class="panel">
+    <h2>Engine vs human agreement</h2>
+    <div class="placeholder" style="margin-bottom:10px;">
+      How often a human reviewer overturns the engine's escalate decisions. High
+      disagreement on a reason code means the engine is escalating too eagerly there.
+    </div>
+    <div class="row"><span class="k">agreement rate (escalates only)</span><span id="agreementRate">--</span></div>
+    <div class="row"><span class="k">reviewed</span><span id="agreementCounts">--</span></div>
+    <div class="section">
+      <h3>Top over-escalating reason codes</h3>
+      <table id="agreementTable">
+        <thead><tr><th>reason_code</th><th>disagree (overturned)</th><th>agree</th><th>inconclusive</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div id="tab-audit" class="tab-panel">
+  <div class="panel">
+    <h2>Audit chain integrity</h2>
+    <div class="placeholder" style="margin-bottom:10px;">
+      Verifies the append-only audit log hasn't been tampered with (each event is
+      hash-chained to the previous one).
+    </div>
+    <div id="auditBadge" class="audit-badge">--</div>
+    <div id="auditDetail"></div>
+    <div class="actions"><button id="recheckAudit">Re-check</button></div>
+  </div>
+</div>
+
 <div id="tab-ledger" class="tab-panel">
   <div class="panel">
-    <h2>Ledger tables (read-only)</h2>
+    <h2>Ledger tables (read-only, under the hood)</h2>
+    <div class="placeholder" style="margin-bottom:10px;">
+      Raw source-of-truth tables the engine reads to investigate claims. Technical --
+      not needed to follow the claims story above, useful for verifying an individual
+      decision against the real data.
+    </div>
     <div class="ledger-tabbar">
       <button class="tab-btn active" data-ledger-table="captures">Captures</button>
       <button class="tab-btn" data-ledger-table="refunds">Refunds</button>
@@ -168,26 +210,25 @@
   </div>
 </div>
 
-<div id="tab-audit" class="tab-panel">
-  <div class="panel">
-    <h2>Audit chain</h2>
-    <div id="auditBadge" class="audit-badge">--</div>
-    <div id="auditDetail"></div>
-    <div class="actions"><button id="recheckAudit">Re-check</button></div>
-  </div>
-</div>
-
 <script>
 /*
- * Real endpoint shapes (confirmed against app.py, not the plan's guess):
+ * Real endpoint shapes -- confirmed by curling the LIVE server (LEDGER_BACKEND=supabase),
+ * which differs from what pytest exercises (LEDGER_BACKEND=sqlite, the in-memory default).
+ * Both are real, both must render correctly here since the page can't know which is active:
+ *
+ *   sqlite (in-memory, what tests use): claim rows have a nested `extracted` object,
+ *     plus `stop_reason_text`, `decision_action`, `decision_note`.
+ *   supabase (what's actually deployed -- see claims_history in supabase/schema.sql):
+ *     claim rows have NO `extracted` nesting (claim_type/order_id/etc. are top-level
+ *     columns instead), NO `stop_reason_text` column at all, and use `reviewer_note` /
+ *     `decided_at` instead of `decision_action` / `decision_note`.
+ *   This is a genuine backend inconsistency (not a frontend bug) -- reported, not fixed
+ *   here since app.py / schema.sql are off-limits this session. Every accessor below
+ *   falls back gracefully so both shapes render the same way.
+ *
  *   GET /admin/claims?status=      -> { claims: [ <same shape as /admin/claims/{id}> ] }
  *     (server filters by status only: open|closed|decided; decision is filtered client-side)
- *   GET /admin/claims/{claim_id}   -> {
- *     claim_id, status, raw_message, sanitizer_flags, stop_reason, stop_reason_text,
- *     resolved_reference, created_at, decision_action, decision_note,
- *     decision, reason_code, max_refundable_paise, why_not_block,
- *     extracted, tools_called, evidence, invariants, engine_version, tolerance_config
- *   }
+ *   GET /admin/claims/{claim_id}   -> claim row, shape varies by backend (see above)
  *   POST /admin/claims/{claim_id}/decide  body {action, note} -> {ok:true} | 404 {error}
  *   GET /admin/ledger/{table}      -> { rows: [...] } | 400 {error} | 200 {error} (backend down)
  *   GET /admin/audit?path=         -> { ok, break_at, detail }
@@ -211,6 +252,21 @@ document.querySelectorAll(".tabs > .tab-btn").forEach((btn) => {
 function rupees(paise) {
   if (paise === null || paise === undefined) return "--";
   return "Rs " + (paise / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+}
+
+// Same convention as verify.html: engine never moves money, so this is always an
+// authorization ceiling, never "refunded"/"credited"/"issued".
+const DECISION_HEADLINE = {
+  pass: "Refund authorized",
+  block: "Claim blocked",
+  escalate: "Sent for human review",
+};
+
+// stop_reason_text only exists on the sqlite backend's rows (see shape note above) --
+// falls back to the same lowercase humanization verify.html uses when it's missing.
+function reasonText(d) {
+  const code = d.stop_reason ?? d.reason_code ?? "";
+  return d.stop_reason_text || d.reason_text || code.replace(/_/g, " ").toLowerCase() || "no reason given.";
 }
 
 function summarizeEvidence(ev) {
@@ -249,8 +305,11 @@ function renderClaimsList() {
   }
   list.innerHTML = claims.map((c) => {
     const badge = '<span class="badge badge-' + (c.decision || "escalate") + '">' + (c.decision || "?") + '</span>';
-    return '<li data-id="' + c.claim_id + '"><span>' + c.claim_id + '<br><span class="placeholder">' +
-      (c.reason_code ?? c.status ?? "") + '</span></span>' + badge + '</li>';
+    // Human-readable reason as the visible secondary line; raw reason_code demoted to
+    // a hover tooltip instead of shown as SNAKE_CASE text (see reasonText() above).
+    const why = c.reason_code || c.stop_reason ? reasonText(c) : (c.status ?? "");
+    return '<li data-id="' + c.claim_id + '" title="' + (c.reason_code ?? "") + '"><span>' + c.claim_id +
+      '<br><span class="placeholder">' + why + '</span></span>' + badge + '</li>';
   }).join("");
   list.querySelectorAll("li[data-id]").forEach((li) => {
     li.addEventListener("click", () => selectClaim(li.dataset.id, li));
@@ -275,13 +334,20 @@ async function selectClaim(claimId, liEl) {
 }
 
 function renderDetail(d) {
+  const decision = d.decision || "escalate";
+  $("decisionHeadline").textContent = DECISION_HEADLINE[decision] || decision.toUpperCase();
+  $("whyStoppedText").textContent = reasonText(d);
+  $("authorizedUpTo").textContent = rupees(d.max_refundable_paise);
   $("whyStoppedCode").textContent = d.stop_reason ?? d.reason_code ?? "--";
-  $("whyStoppedText").textContent = d.stop_reason_text ?? "";
   $("rawClaim").textContent = d.raw_message ?? "--";
 
-  const extracted = d.extracted;
+  // supabase backend stores claim_type/order_id/etc. as flat top-level columns
+  // instead of a nested `extracted` object (see shape note at top of script) --
+  // fall back to the row itself so both backends render the same fields.
+  const extracted = d.extracted || d;
   const fields = ["claim_type", "order_id", "claimed_reference", "claimed_amount_paise", "claimed_instrument"];
-  $("extractedFields").innerHTML = extracted
+  const parsed = fields.some((f) => extracted[f] !== null && extracted[f] !== undefined);
+  $("extractedFields").innerHTML = parsed
     ? fields.map((f) => {
         let val = extracted[f];
         if (f === "claimed_amount_paise" && val != null) val = rupees(val);
@@ -310,12 +376,38 @@ function renderDetail(d) {
       }).join("")
     : '<tr><td colspan="3" class="placeholder">no invariants</td></tr>';
 
-  $("whyNotBlock").textContent = "WHY NOT BLOCK: " + (d.why_not_block ?? "--");
+  const whyNotBlock = $("whyNotBlock");
+  if (d.why_not_block) {
+    whyNotBlock.style.display = "block";
+    whyNotBlock.textContent = "WHY NOT BLOCK: " + d.why_not_block;
+  } else {
+    whyNotBlock.style.display = "none";
+  }
   $("note").value = "";
 
-  const decisionButtons = [$("approveBtn"), $("rejectBtn"), $("infoBtn")];
-  const openForDecision = d.status === "open";
-  decisionButtons.forEach((b) => (b.disabled = !openForDecision));
+  // "closed" = engine decided pass/block on its own, no human ever touched it.
+  // "decided" = this was an escalate that a human then approved/rejected/asked-info on.
+  // "open" = still waiting on a human. Each renders a different bottom panel --
+  // showing a blank editable note form on an already-decided claim reads as "you can
+  // still change this," which isn't true.
+  const openEl = $("decisionOpen");
+  const readonlyEl = $("decisionReadonly");
+  if (d.status === "open") {
+    openEl.style.display = "block";
+    readonlyEl.style.display = "none";
+  } else {
+    openEl.style.display = "none";
+    readonlyEl.style.display = "block";
+    if (d.status === "decided") {
+      const action = d.decision_action ?? "reviewed";
+      const note = d.decision_note ?? d.reviewer_note;
+      const when = d.decided_at ? " at " + d.decided_at : "";
+      readonlyEl.textContent = "Human reviewed" + when + ": " + action.toUpperCase() +
+        (note ? " -- \"" + note + "\"" : " (no note left)");
+    } else {
+      readonlyEl.textContent = "Auto-closed by the engine (" + decision + ") -- no human review needed.";
+    }
+  }
 }
 
 async function decide(action) {
@@ -401,10 +493,35 @@ async function loadAudit() {
 
 $("recheckAudit").addEventListener("click", loadAudit);
 
+// ---- Agreement panel (engine escalate vs reviewer/admin decision) ----
+async function loadAgreement() {
+  try {
+    const res = await fetch("/admin/agreement");
+    const d = await res.json();
+    if (d.error) {
+      $("agreementRate").textContent = "error: " + d.error;
+      return;
+    }
+    $("agreementRate").textContent = d.agreement_rate != null ? (d.agreement_rate * 100).toFixed(1) + "%" : "n/a";
+    $("agreementCounts").textContent = d.reviewed_count + " reviewed (" + d.agree_count + " agree / " +
+      d.disagree_count + " disagree), " + d.inconclusive_count + " pending info";
+    const body = $("agreementTable").querySelector("tbody");
+    const top = (d.by_reason_code || []).slice(0, 3);
+    body.innerHTML = top.length
+      ? top.map((r) => '<tr><td title="' + reasonText({ reason_code: r.reason_code }) + '">' + r.reason_code +
+          '</td><td class="fail-cell">' + r.disagree + '</td><td class="pass-cell">' + r.agree +
+          '</td><td>' + r.inconclusive + '</td></tr>').join("")
+      : '<tr><td colspan="4" class="placeholder">no reviewed escalates yet</td></tr>';
+  } catch (err) {
+    $("agreementRate").textContent = "failed to load: " + err;
+  }
+}
+
 // ---- init ----
 loadClaims();
 loadLedgerTable("captures");
 loadAudit();
+loadAgreement();
 </script>
 </body>
 </html>

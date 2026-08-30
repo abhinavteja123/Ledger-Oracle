@@ -15,12 +15,10 @@ from pathlib import Path
 
 import time
 
-from cerebras.cloud.sdk import CerebrasError
-
 import agent
 import parser as claim_parser
 from eval.score import _fmt, gather_evidence, load_consumed_references, load_manifest, print_report, score, summarize
-from llm_client import get_client
+from llm_client import LLMProviderError, get_client
 from models import InvestigationState
 from policy import decide
 
@@ -58,7 +56,7 @@ def run_b(data_dir: Path, client=None) -> dict:
         time.sleep(PACE_SECONDS)
         try:
             claim = claim_parser.parse_claim(text, client=client)
-        except (claim_parser.ParseFailedError, CerebrasError):
+        except (claim_parser.ParseFailedError, LLMProviderError):
             # A parse failure OR a transient LLM-boundary failure (rate limit, timeout)
             # both resolve the same way here: no structured claim, escalate on missing
             # data -- one claim's failure must never crash the whole batch (PRD 9.3).
@@ -91,7 +89,7 @@ def run_c(data_dir: Path, client=None) -> dict:
         time.sleep(PACE_SECONDS_C)
         try:
             claim = claim_parser.parse_claim(text, client=client)
-        except (claim_parser.ParseFailedError, CerebrasError):
+        except (claim_parser.ParseFailedError, LLMProviderError):
             claim = None
         _, verdict = agent.investigate(
             record["claim_id"], text, extracted=claim, client=client,
@@ -116,7 +114,7 @@ def main():
         client = get_client()
     except Exception as e:
         raise SystemExit(
-            f"Runs B and C need a live Cerebras client (CEREBRAS_API_KEY not usable: {e}). "
+            f"Runs B and C need a live LLM client (GROQ_API_KEY or GEMINI_API_KEY not usable: {e}). "
             "Run A above needs no LLM and is already a complete result."
         )
 

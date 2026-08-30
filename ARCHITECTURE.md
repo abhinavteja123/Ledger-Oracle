@@ -14,7 +14,7 @@
                 +-------------+-------------+   (defense-in-depth, NOT the defense)
                               v
                 +---------------------------+
-                |  Claim Extraction (LLM)   |   gpt-oss-120b via Cerebras Cloud API
+                |  Claim Extraction (LLM)   |   Groq (gpt-oss-120b), falls back to Gemini
                 |  -> StructuredClaim       |   output type cannot express a decision
                 +-------------+-------------+
                               v
@@ -90,8 +90,8 @@ models.py            all Pydantic models -- the shared contract every other file
 config.py             the agent's constitution + policy tolerance knobs
 tools.py              5 typed read-only tools + TOOL_REGISTRY, read-only SQLite
 sanitize.py            defense-in-depth: flags, never drops content
-llm_client.py          lazy Cerebras client construction (gpt-oss-120b)
-parser.py              free text -> StructuredClaim (Cerebras, json_schema mode)
+llm_client.py          lazy Groq/Gemini client construction, with fallback (gpt-oss-120b)
+parser.py              free text -> StructuredClaim (Groq/Gemini, json_schema mode)
 agent.py               bounded while-loop + InvestigationState -- investigate()
 policy.py              DECIDES. no network, no model, no randomness. decide()
 audit/                 append-only hash-chained audit trail
@@ -121,15 +121,17 @@ the human-review pause is implemented as a checkpointed graph interrupt. It isn'
 so the dependency isn't either -- one fewer thing that can fail on stage, and the
 "AI judgment" axis explicitly rewards saying where a tool was deliberately not used.
 
-## Why Cerebras + gpt-oss-120b, not the originally-planned model
+## Why Groq + Gemini, not the originally-planned model
 
 The build started assuming a Llama model on Cerebras. Live docs (checked mid-build)
-showed Cerebras' current public catalog is `gpt-oss-120b` and `gemma-4-31b` -- no Llama
-family listed. Switched to `gpt-oss-120b`, logged in `FAILURES.md`. The Cerebras choice
-itself (over a paid frontier API) is deliberate: **$0 cost on the free tier**, fast
-inference, and it removes an entire class of demo-day risk (no API key billing, and the
-system degrades to `MODEL_UNAVAILABLE` -> escalate rather than failing open if the LLM
-is ever unreachable -- consistent with the rest of the failure-recovery design).
+showed Cerebras' then-current public catalog was `gpt-oss-120b` and `gemma-4-31b` --
+no Llama family listed. Switched to `gpt-oss-120b`, logged in `FAILURES.md`. Cerebras
+was later removed entirely and replaced by Gemini (via its OpenAI-compatible endpoint)
+as the fallback provider, with Groq staying primary -- see `llm_client.py`. The
+free-tier-provider choice itself (over a paid frontier API) is deliberate: **$0 cost**,
+fast inference, and it removes an entire class of demo-day risk (no API key billing, and
+the system degrades to `MODEL_UNAVAILABLE` -> escalate rather than failing open if the
+LLM is ever unreachable -- consistent with the rest of the failure-recovery design).
 
 ## Prompt injection: the structural argument
 

@@ -40,7 +40,7 @@ def connection_errors() -> tuple:
     """Exception types get_readonly_connection/get_owner_connection can raise on
     failure, so callers (tools.py) can catch the right ones per backend without a
     hard psycopg2 import when running sqlite-only. Mirrors agent.py's
-    CEREBRAS_ERRORS -- same class of gap (a backend added later needs its errors
+    LLM_ERRORS -- same class of gap (a backend added later needs its errors
     added to every except clause written for the original backend)."""
     if backend() == "supabase":
         import psycopg2

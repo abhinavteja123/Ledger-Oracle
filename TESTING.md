@@ -12,7 +12,7 @@ build. See `FAILURES.md` for the real bugs each layer of testing caught.
 2. sanitize.py -- strip control chars, cap length, flag instruction-shaped spans
         |
         v
-3. parser.py -- Cerebras/Groq (gpt-oss-120b), json_schema structured output
+3. parser.py -- Groq/Gemini (gpt-oss-120b), json_schema structured output
    -> StructuredClaim  (claim_type, order_id, claimed_reference, claimed_amount_paise, ...)
    -- cannot express pass/block/escalate, structurally (Rule 3)
         |
@@ -90,18 +90,22 @@ python -m audit.verify audit.jsonl                  # AUDIT INTEGRITY: FAILED (b
 All of this was run for real during this build. `unsafe_failures = 0` and
 `graceful_recovery_rate = 1.000` on every tool-boundary fault mode, confirmed.
 
-### 3. The live LLM path -- needs `CEREBRAS_API_KEY` and/or `GROQ_API_KEY` in `.env`
+### 3. The live LLM path -- needs `GROQ_API_KEY` and/or `GEMINI_API_KEY` in `.env`
 
 ```bash
-cp .env.example .env   # fill in CEREBRAS_API_KEY and/or GROQ_API_KEY
+cp .env.example .env   # fill in GROQ_API_KEY and/or GEMINI_API_KEY
 ```
 
 Multi-provider fallback (`llm_client.py`): tries Groq first if `GROQ_API_KEY` is set,
-falls back to Cerebras. With only one key set, it's just that one provider, unchanged
-behaviour. Both keys were tested this session -- Cerebras returned `402 Payment
-Required` on this account (billing not active on the free tier), Groq worked once two
-real schema bugs were fixed (see `FAILURES.md`: `required` must list every property key
-in strict mode; every tool parameter schema needs `additionalProperties: false`).
+falls back to Gemini (via its OpenAI-compatible endpoint) if `GEMINI_API_KEY` is set.
+With only one key set, it's just that one provider, unchanged behaviour. During this
+build, Groq and (at the time) Cerebras were tested live -- Cerebras returned `402
+Payment Required` on this account (billing not active on the free tier), Groq worked
+once two real schema bugs were fixed (see `FAILURES.md`: `required` must list every
+property key in strict mode; every tool parameter schema needs
+`additionalProperties: false`). Cerebras has since been removed and replaced by
+Gemini as the fallback provider; the Gemini model id in `llm_client.py` is unverified
+against a live key.
 
 **Parser alone:**
 ```bash

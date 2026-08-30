@@ -7,10 +7,20 @@ tries). The caller (agent.py) is responsible for catching that and escalating
 PARSE_FAILED (PRD 9.3) -- this module does not know about InvestigationState or Verdict.
 """
 import json
+import re
 
 from config import MAX_PARSE_ATTEMPTS
 from llm_client import MODEL, get_client
 from models import StructuredClaim
+
+# ponytail: the model occasionally bakes a label word into claimed_reference (e.g.
+# "UTR 526112345678" instead of "526112345678") -- found live, intermittent (clean
+# phrasing parses clean, doesn't reproduce every time). A real reference the ledger
+# genuinely has would wrongly resolve to REF_NOT_IN_LEDGER since the label breaks
+# exact-string matching in tools.get_payment_by_utr. Deterministic hygiene here, not
+# prompt-tuning against nondeterministic model output. Extend the pattern list if
+# other labels show up (RRN/UPI REF/txn id/...).
+_REFERENCE_LABEL_PREFIX = re.compile(r"^\s*(utr|rrn)[\s:#-]+", re.I)
 
 PARSER_SYSTEM = """\
 Extract ONLY what the customer explicitly states. Never infer, never guess.
@@ -63,7 +73,12 @@ def parse_claim(text: str, client=None) -> StructuredClaim:
     for attempt in range(1, MAX_PARSE_ATTEMPTS + 1):
         raw = _call(client, messages)
         try:
-            return StructuredClaim.model_validate_json(raw)
+            claim = StructuredClaim.model_validate_json(raw)
+            if claim.claimed_reference:
+                stripped = _REFERENCE_LABEL_PREFIX.sub("", claim.claimed_reference)
+                if stripped != claim.claimed_reference:
+                    claim = claim.model_copy(update={"claimed_reference": stripped})
+            return claim
         except (ValueError, TypeError) as e:
             # Covers both invalid JSON and schema-valid-but-Pydantic-invalid JSON --
             # "strict" mode on the API side is a request, not a guarantee, so we

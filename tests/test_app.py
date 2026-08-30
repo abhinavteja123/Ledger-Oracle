@@ -4,7 +4,7 @@ approve-writes-consumed_references loop-closing property (PRD 11.3).
 Everything runs against a fixture ledger.db placed at the literal relative path
 "data/ledger.db" (via monkeypatch.chdir), matching every hardcoded default in
 tools.py/agent.py -- no need to thread a db_path override through app.py itself.
-The Cerebras client is faked at both parser.get_client and agent.get_client; no
+The LLM client is faked at both parser.get_client and agent.get_client; no
 network call happens anywhere in this file.
 """
 import json
@@ -251,7 +251,7 @@ def test_admin_approve_also_blocks_replay_via_verify(client_app, monkeypatch):
 
 
 def test_llm_unavailable_does_not_crash(client_app, monkeypatch):
-    from cerebras.cloud.sdk import APIConnectionError
+    from llm_client import LLMProviderError
 
     class _RaisingClient:
         @property
@@ -260,7 +260,7 @@ def test_llm_unavailable_does_not_crash(client_app, monkeypatch):
                 class completions:
                     @staticmethod
                     def create(**kwargs):
-                        raise APIConnectionError(message="simulated outage", request=None)
+                        raise LLMProviderError("simulated outage")
             return _Chat()
 
     monkeypatch.setattr(parser_module, "get_client", lambda: _RaisingClient())

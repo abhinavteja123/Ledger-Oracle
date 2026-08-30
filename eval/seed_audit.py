@@ -1,6 +1,6 @@
 """Seeds a real, representative audit.jsonl from the zero-LLM ablation-A run, so
 `make audit` (and the tamper demo, PRD 12.4) has a real chain to verify on a fresh
-clone -- without needing a live CEREBRAS_API_KEY. A live deployment gets its audit
+clone -- without needing a live GROQ_API_KEY or GEMINI_API_KEY. A live deployment gets its audit
 trail from real /verify calls through app.py instead; this is for the demo/eval path.
 
 Usage: python -m eval.seed_audit --data data/ --path audit.jsonl

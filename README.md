@@ -84,14 +84,33 @@ write path; approval is a human action. See `ARCHITECTURE.md` for the full list.
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # set GROQ_API_KEY and/or CEREBRAS_API_KEY (both free-tier)
+cp .env.example .env   # set GROQ_API_KEY and/or GEMINI_API_KEY (both free-tier)
 make gen                # synthetic ledger + claims + MANIFEST.json
 make test                # pytest -q
 make eval                # 3x3 matrix + rupee cost, engine-only (no LLM needed)
-make run                  # uvicorn app:app, serves static/verify.html + review.html
+make run                  # uvicorn app:app
 ```
 
-Multi-provider fallback (`llm_client.py`): tries Groq first, falls back to Cerebras.
+Once running, `uvicorn` serves the whole demo:
+
+| Route | What it is |
+|---|---|
+| `/` | Landing page -- what this is, how it decides, the "never moves money" framing |
+| `/verify-page` | Customer-facing demo: submit a claim, get a verdict + full investigation trace. Includes one-click example claims (pass / block / near-match typo / ambiguous order / prompt injection / Hinglish) so every decision path is reachable without typing |
+| `/admin` | Judge/ops view: claims history, raw ledger browser, hash-chain audit-integrity check, engine-vs-human agreement panel |
+| `/review` | Human reviewer queue for escalated claims |
+
+Multi-provider fallback (`llm_client.py`): tries Groq first, falls back to Gemini (via
+Gemini's OpenAI-compatible endpoint, `openai` SDK pointed at
+`generativelanguage.googleapis.com`). Every provider's own exception type normalizes to
+one `LLMProviderError`, so a provider failure always degrades to a clean
+`MODEL_UNAVAILABLE` escalate, never a crash. **Confirmed live** with a real
+`GEMINI_API_KEY`: raw completion, strict-mode `json_schema` claim extraction
+(`parser.py`), and tool-calling (`agent.py`'s `get_payment_by_utr`) all tested with
+Gemini as the *only* configured provider (Groq unset for the test) -- real end-to-end
+`pass/OK` verdict against live Supabase data, model id `gemini-2.5-flash` confirmed
+working as used.
+
 Groq's free tier has a **daily token limit** (200k/day at time of writing) -- a single
 `/verify` call or a small test run is trivial, but a full ablation batch (`make ablate`)
 over 50-100+ claims can exhaust it; see `TESTING.md` and `FAILURES.md` for what that
@@ -99,9 +118,56 @@ looks like and how the system degrades (gracefully -- every rate-limited claim
 escalates, nothing crashes, `unsafe_failures` stays 0).
 
 `make eval` needs no API key -- it's ablation run A, the engine fed ground-truth
-structured fields directly. Anything touching `parser.py`/`agent.py`'s real Cerebras
+structured fields directly. Anything touching `parser.py`/`agent.py`'s real LLM
 calls (`make ablate`, `make run`'s `/verify` endpoint against real free text) needs
-`CEREBRAS_API_KEY` set.
+`GROQ_API_KEY` and/or `GEMINI_API_KEY` set.
+
+## Safety hardening beyond the ablation runs
+
+The numbers in **Results** below measure decision *accuracy*. These measure whether the
+decision path can be tricked into an unsafe `pass` at all -- the actual judging axis for
+an AI Risk Manager, checked separately from whether the model classified a claim
+correctly:
+
+- **Adversarial claim-text corpus** (`eval/adversarial_corpus.py`) -- prompt injection,
+  homoglyph/zero-width UTR disguises, fake `<tool>` spans, amount-in-words-vs-digits and
+  multi-order/multi-amount contradictions, run through the real
+  `sanitize -> parse -> decide` pipeline with zero live LLM calls. `unsafe_pass_count`
+  is now a headline metric on every `eval.score` run (`eval/score.py`), not just
+  fault-injection mode -- target 0, always.
+- **Evidence-binding fix** (`policy.py`): the agent picks its own tool-call arguments:
+  nothing previously forced `get_payment_by_utr`'s search UTR to equal the claim's own
+  `claimed_reference`. A wrong-UTR search (LLM confusion or an injection attempt) could
+  smuggle in a real-but-unrelated capture as if it verified the claim. Fixed; regression
+  test in `tests/test_policy_invariants.py`.
+- **`AMBIGUOUS_ORDER`/`CONTRADICTORY_AMOUNTS`/`CONTRADICTORY_CLAIM` now reachable in
+  production.** These PRD 10.3 escalation branches existed in `policy.py` but nothing
+  in the live request path ever set the corresponding `risk_flags` -- only the eval
+  harness's synthetic ground-truth generator did, so the dev-set numbers on this class
+  were partly an artifact of the harness handing `decide()` the answer. Fixed: a
+  regex-heuristic detector (`sanitize.detect_risk_flags()`, defense-in-depth, same
+  ceiling/upgrade-path convention as the existing instruction-pattern detector) now
+  runs on every real claim.
+- **Deterministic replay harness** (`tests/test_replay_determinism.py`) -- re-executes
+  real historical claims' logged tool calls against the live ledger and asserts the
+  recomputed verdict matches what was actually decided, proving "no LLM in the decision
+  path" empirically rather than by assertion; includes a mutation test proving the
+  harness would actually catch a real determinism break.
+- **Reviewer/admin agreement-rate** (`eval/agreement.py`, `GET /admin/agreement`) --
+  closes the human-in-the-loop loop: computes how often a human reviewer agreed or
+  overturned an `escalate` verdict, broken down by `reason_code`, so it's visible which
+  invariant over-triggers.
+- **Supabase RLS** -- `captures`/`refunds`/`consumed_references` previously had **zero
+  RLS and default Supabase grants**: `anon`/`authenticated` held not just `SELECT` but
+  `INSERT`/`UPDATE`/`DELETE`/`TRUNCATE` on the ledger the policy engine trusts, reachable
+  by anyone with the publishable key over REST, bypassing the app and the policy engine
+  entirely. Fixed live: those grants revoked, RLS enabled, a scoped read-only policy
+  added for the app's own `ledger_reader` role (`supabase/schema.sql`). Verified via
+  Supabase's own advisors (critical finding cleared) and a real end-to-end `/verify`
+  call against the live database post-fix.
+
+129 tests pass (`pytest -q`), up from the pre-session baseline, entirely offline/stubbed
+-- zero live LLM calls anywhere in the test suite.
 
 ## Results
 
@@ -134,8 +200,10 @@ across every axis would be. Run A is still the ceiling (PRD 18.6): the engine fe
 ground-truth fields, no parser noise, no model in the loop. It proves the deterministic
 invariants (I1/I2/I3) are correct in isolation.
 
-**Runs B and C -- live LLM, real numbers, partial.** A `GROQ_API_KEY` and
-`CEREBRAS_API_KEY` were both added and tested live during this build (see
+**Runs B and C -- live LLM, real numbers, partial.** A `GROQ_API_KEY` and (at the
+time) `CEREBRAS_API_KEY` were both added and tested live during this build --
+Cerebras has since been removed and replaced by Gemini as the fallback provider
+(see
 `FAILURES.md` for four real bugs this surfaced: Groq's strict-mode schema requiring
 every field in `required`; tool schemas needing `additionalProperties:false`; a
 `decidable()`/`decide()` mismatch that wrongly escalated a resolvable claim; and
@@ -196,7 +264,8 @@ test && make eval` reproduces it from a clean clone. `parser.py` and `agent.py` 
 built and unit-tested against fake/injected clients (no network in any test), and
 `app.py` degrades to an `escalate`-shaped `MODEL_UNAVAILABLE` response rather than
 crashing if the LLM is unreachable. Producing real numbers for ablation runs B and C,
-the full held-out test-set run, and the live demo requires a `CEREBRAS_API_KEY`, which
-was not available during this build session. See `FAILURES.md` for the full build log,
+the full held-out test-set run, and the live demo requires a `GROQ_API_KEY` and/or
+`GEMINI_API_KEY`; only a `GROQ_API_KEY` was available during this build session. See
+`FAILURES.md` for the full build log,
 including two real bugs found and fixed via the fault-injection recovery tests before
 any of this touched a live API.

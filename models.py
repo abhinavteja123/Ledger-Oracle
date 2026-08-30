@@ -15,9 +15,9 @@ Decision = Literal["pass", "block", "escalate"]
 # ---------------------------------------------------------------------------
 
 class StructuredClaim(BaseModel):
-    model_config = ConfigDict(extra="forbid")  # Cerebras strict json_schema needs
-                                                 # additionalProperties:false; Pydantic
-                                                 # only emits that with extra="forbid"
+    model_config = ConfigDict(extra="forbid")  # OpenAI-compatible strict json_schema
+                                                 # mode needs additionalProperties:false;
+                                                 # Pydantic only emits that with extra="forbid"
 
     claim_type: Literal["duplicate_charge", "payment_not_recorded", "other"]
     order_id: Optional[str] = None

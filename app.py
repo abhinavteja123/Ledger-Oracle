@@ -18,16 +18,18 @@ from pydantic import BaseModel
 import config
 import db
 import tools
-from agent import CEREBRAS_ERRORS, investigate
+from agent import LLM_ERRORS, investigate
 from audit import record_event
 from audit.verify import verify as audit_verify
+from eval.agreement import compute_agreement
 from models import InvestigationState, Verdict
 from parser import ParseFailedError, parse_claim
-from sanitize import sanitize
+from sanitize import detect_risk_flags, sanitize
 
 app = FastAPI(title="Ledger Oracle")
 
 REASON_CODE_TEXT = {
+    "OK": "The claim matched a real, settled payment for the full amount -- refund authorized up to that amount.",
     "REF_NOT_IN_LEDGER": "The claimed reference does not exist anywhere in our ledger.",
     "REF_AMBIGUOUS": "The reference matches more than one capture; the engine will not guess.",
     "REF_NEAR_MATCH_TYPO": "The reference nearly matches a real capture -- likely a typo, not fraud.",
@@ -88,6 +90,7 @@ def _escalate_response(reason_code: str, detail: str) -> dict:
     return {
         "decision": "escalate",
         "reason_code": reason_code,
+        "reason_text": _stop_reason_text(reason_code),
         "max_refundable_paise": 0,
         "why_not_block": detail,
         "extracted": None,
@@ -103,6 +106,7 @@ def _verdict_response(state, verdict) -> dict:
     return {
         "decision": verdict.decision,
         "reason_code": verdict.reason_code,
+        "reason_text": _stop_reason_text(verdict.reason_code),
         "max_refundable_paise": verdict.max_refundable_paise,
         "why_not_block": verdict.why_not_block,
         "extracted": state.extracted.model_dump() if state.extracted else None,
@@ -304,7 +308,7 @@ def verify(req: VerifyRequest):
         record_event("parse_failed", claim_id, {"detail": str(e)})
         _log_early_escalate("PARSE_FAILED", str(e))
         return JSONResponse(_escalate_response("PARSE_FAILED", str(e)))
-    except CEREBRAS_ERRORS as e:
+    except LLM_ERRORS as e:
         record_event("model_unavailable", claim_id, {"detail": str(e)})
         _log_early_escalate("MODEL_UNAVAILABLE", str(e))
         return JSONResponse(_escalate_response("MODEL_UNAVAILABLE", str(e)))
@@ -312,7 +316,8 @@ def verify(req: VerifyRequest):
     record_event("parsed", claim_id, {"extracted": extracted.model_dump()})
 
     consumed = _load_ledger_consumed_references(tools.DB_PATH) | frozenset(APPROVED_REFERENCES)
-    state, verdict = investigate(claim_id, req.text, extracted=extracted, consumed_references=consumed)
+    state, verdict = investigate(claim_id, req.text, extracted=extracted, consumed_references=consumed,
+                                  risk_flags=detect_risk_flags(clean_text))
 
     for call, evidence in zip(state.tools_called, state.evidence):
         record_event("tool_call", claim_id, {"tool": call.tool, "args": call.args})
@@ -385,6 +390,19 @@ def review_decide(claim_id: str, req: DecideRequest):
 def admin_claims(status: Optional[str] = None):
     try:
         return {"claims": history_store.all(status=status)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=200)
+
+
+@app.get("/admin/agreement")
+def admin_agreement(path: str = "audit.jsonl"):
+    # Engine-vs-human agreement (PRD gap: nothing else joins verdict events against
+    # reviewer_decision/admin_decision events). Reads audit.jsonl, not HistoryStore --
+    # HistoryStore.decide() is only ever reached via /admin/claims/{id}/decide, so it
+    # would silently miss every reviewer_decision made through the older /review/*
+    # queue (static/review.html). audit.jsonl has both event types.
+    try:
+        return compute_agreement(path)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=200)
 

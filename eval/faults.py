@@ -13,7 +13,7 @@ it. Two kinds of injection, both call-counted (not random, not time-based) so th
 """
 import contextlib
 
-from cerebras.cloud.sdk import APIConnectionError
+from llm_client import LLMProviderError
 
 import tools
 from models import OrderPaymentsResult, PaymentLookupResult, ToolError
@@ -123,7 +123,7 @@ class _FakeResponse:
 
 
 def _llm_unavailable():
-    raise APIConnectionError(message="injected: simulated connection failure", request=None)
+    raise LLMProviderError("injected: simulated connection failure")
 
 
 def _llm_invalid_json():
@@ -147,7 +147,7 @@ LLM_FAULT_MODES = {
 
 
 class FaultInjectingClient:
-    """Fake Cerebras-shaped client. Pass as agent.py's `client` param. Injects the
+    """Fake OpenAI-shaped client. Pass as agent.py's `client` param. Injects the
     fault on the `at_call`-th chat.completions.create() call; every other call passes
     through to `passthrough_client` (a real or another fake client) so a multi-step
     investigation still progresses normally around the injected failure."""

@@ -7,7 +7,7 @@ with identical ground_truth and identical ground_truth_fields) and runs both thr
 engine-only path (ablation run A, no LLM) to confirm the *engine* is provably indifferent
 to which claim_id it's given -- tone never reaches it. It does NOT prove the *parser* is
 tone-invariant on raw prose (that needs a live LLM call against real free text, no
-CEREBRAS_API_KEY is available in this environment -- run this for real once a key exists,
+GROQ_API_KEY/GEMINI_API_KEY is available in this environment -- run this for real once a key exists,
 per PRD 17.7/20 step 14's held-out run).
 """
 import json

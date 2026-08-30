@@ -87,3 +87,19 @@ def test_does_not_correct_typo_in_reference():
     client = _FakeClient([_valid_claim_json(claimed_reference="526112345670")])  # transposed
     claim = parse_claim("some text", client=client)
     assert claim.claimed_reference == "526112345670"
+
+
+def test_strips_utr_label_baked_into_reference():
+    """Regression: found live, the model sometimes returns "UTR 526112345678" instead
+    of the bare reference -- would wrongly resolve to REF_NOT_IN_LEDGER against a
+    ledger that genuinely has this UTR, since tools.get_payment_by_utr matches by
+    exact string."""
+    client = _FakeClient([_valid_claim_json(claimed_reference="UTR 526112345678")])
+    claim = parse_claim("some text", client=client)
+    assert claim.claimed_reference == "526112345678"
+
+
+def test_reference_without_label_is_unaffected():
+    client = _FakeClient([_valid_claim_json(claimed_reference="526112345678")])
+    claim = parse_claim("some text", client=client)
+    assert claim.claimed_reference == "526112345678"

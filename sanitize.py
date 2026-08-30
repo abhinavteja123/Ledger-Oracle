@@ -29,6 +29,31 @@ _HOMOGLYPH_MAP = {
 
 _REF_LIKE = re.compile(r"[A-Za-z0-9Ѐ-ӿ]{6,}")
 
+# ponytail: regex heuristics over raw claim text, defense-in-depth only (PRD 10.3's
+# ADVERSARIAL class) -- not exhaustive, same ceiling as _INSTRUCTION_PATTERNS above.
+# StructuredClaim (models.py) has a single Optional order_id / single Optional
+# claimed_amount_paise field -- it structurally cannot carry "two order ids" or "two
+# amounts" once parsed, so a real multi-value claim must be caught here, on the raw
+# text, before that information is lost to a single-value extraction. Upgrade path:
+# if false positives/negatives show up in production claims, tighten these patterns
+# or replace with a small classifier -- don't silently drop this detection instead.
+_ORDER_ID_MENTION = re.compile(r"\border[\s#]*([A-Za-z0-9_-]{2,})", re.I)
+
+_AMOUNT_MENTION = re.compile(
+    r"(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)|(\d{2,}(?:,\d{3})*(?:\.\d{1,2})?)\s*rupees",
+    re.I,
+)
+
+# "I never got charged" / "wasn't charged" / "no payment went through" ... followed
+# somewhere by a refund-of-existing-charge(s) request -- the specific self-contradiction
+# shape PRD 10.3's example uses ("I never got charged... refund both charges please").
+_NEGATED_CHARGE = re.compile(
+    r"\b(never|didn't|did not|wasn't|was not|no)\b[^.!?]{0,20}\b(charged|paid|payment)\b", re.I,
+)
+_REFUND_EXISTING_CHARGE = re.compile(
+    r"\brefund\b[^.!?]{0,20}\b(both charges|the charges|charges|this charge|it)\b", re.I,
+)
+
 
 def _normalize_homoglyphs_in_ref_spans(text: str) -> str:
     def _fix(match: re.Match) -> str:
@@ -36,6 +61,37 @@ def _normalize_homoglyphs_in_ref_spans(text: str) -> str:
         return "".join(_HOMOGLYPH_MAP.get(ch, ch) for ch in span)
 
     return _REF_LIKE.sub(_fix, text)
+
+
+def detect_risk_flags(text: str) -> list[str]:
+    """Raw-claim-text heuristics for PRD 10.3's ADVERSARIAL class (AMBIGUOUS_ORDER,
+    CONTRADICTORY_AMOUNTS, CONTRADICTORY_CLAIM) -- separate from sanitize()'s own
+    flags because these feed policy.decide()'s risk_flags-gated escalation branches
+    (policy.py's DECIDABILITY GATE), not the sanitizer's own audit-log-only flags.
+    Run on cleaned text (sanitize()'s output), before parsing collapses each field
+    to a single value -- see module docstring above for why raw text is the only
+    place this is still detectable.
+    """
+    flags: list[str] = []
+
+    order_ids = {m.group(1).upper() for m in _ORDER_ID_MENTION.finditer(text)}
+    if len(order_ids) >= 2:
+        flags.append("AMBIGUOUS_ORDER")
+
+    amounts = set()
+    for m in _AMOUNT_MENTION.finditer(text):
+        raw = (m.group(1) or m.group(2)).replace(",", "")
+        try:
+            amounts.add(round(float(raw), 2))
+        except ValueError:
+            continue
+    if len(amounts) >= 2:
+        flags.append("CONTRADICTORY_AMOUNTS")
+
+    if _NEGATED_CHARGE.search(text) and _REFUND_EXISTING_CHARGE.search(text):
+        flags.append("CONTRADICTORY_CLAIM")
+
+    return flags
 
 
 def sanitize(raw_message: str) -> tuple[str, list[str]]:

@@ -113,6 +113,26 @@ def test_wall_clock_budget_exhausted(tmp_path, monkeypatch):
     assert state.stop_reason == "TIME_BUDGET_EXHAUSTED"
 
 
+def test_risk_flags_param_reaches_decide_and_short_circuits(tmp_path):
+    """Regression: investigate()'s risk_flags param (fed by sanitize.detect_risk_flags()
+    in app.py) must actually seed state.risk_flags so policy.decide()'s DECIDABILITY
+    GATE sees it -- this used to go nowhere, making PRD 10.3's AMBIGUOUS_ORDER /
+    CONTRADICTORY_AMOUNTS / CONTRADICTORY_CLAIM escalation branches unreachable in
+    production even though tests exercised them directly against decide(). One tool
+    call is enough to make decidable() True; the risk_flags check then fires before
+    any evidence-based reasoning, regardless of what that evidence actually contains.
+    """
+    db = _fixture_db(tmp_path)
+    # CLAIM has claimed_reference set, so decidable() specifically needs a
+    # PaymentLookupResult (get_payment_by_utr), not just any evidence -- see
+    # policy.decidable()'s own comment/FAILURES.md on this exact distinction.
+    client = _FakeClient([("get_payment_by_utr", '{"utr": "111111111111"}')])
+    state, verdict = investigate("c5", "msg", extracted=CLAIM, client=client, db_path=db,
+                                  risk_flags=["AMBIGUOUS_ORDER"])
+    assert verdict.decision == "escalate"
+    assert verdict.reason_code == "AMBIGUOUS_ORDER"
+
+
 def test_tool_error_past_retry_budget_escalates_tool_unavailable(tmp_path):
     # Nonexistent db path -> every tool call returns ToolError(unavailable).
     bad_db = str(tmp_path / "does_not_exist.db")
@@ -135,10 +155,9 @@ def test_duplicate_call_suppressed_does_not_increment_steps(tmp_path):
 
 
 def test_model_unavailable_on_sdk_error(tmp_path):
-    from cerebras.cloud.sdk import APIConnectionError
-    import httpx
+    from llm_client import LLMProviderError
     db = _fixture_db(tmp_path)
-    exc = APIConnectionError(request=httpx.Request("POST", "https://x"))
+    exc = LLMProviderError("simulated connection failure")
     client = _RaisingClient(exc)
     state, verdict = investigate("c6", "msg", extracted=CLAIM, client=client, db_path=db)
     assert verdict.decision == "escalate"
@@ -197,11 +216,9 @@ def test_every_failure_mode_terminates_and_never_passes_without_evidence(tmp_pat
         monkeypatch.setattr(config, "WALL_CLOCK_BUDGET_SECONDS", 0)
         client = _FakeClient([("check_refund_history", '{"order_id": "ord_1"}')])
     else:  # model_down
-        from cerebras.cloud.sdk import RateLimitError
-        import httpx
+        from llm_client import LLMProviderError
         db = _fixture_db(tmp_path)
-        resp = httpx.Response(429, request=httpx.Request("POST", "https://x"))
-        client = _RaisingClient(RateLimitError("rate limited", response=resp, body=None))
+        client = _RaisingClient(LLMProviderError("rate limited"))
 
     state, verdict = investigate("cx", "msg", extracted=CLAIM, client=client, db_path=db)
     assert verdict is not None

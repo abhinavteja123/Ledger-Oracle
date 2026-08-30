@@ -8,175 +8,194 @@ Razorpay AI Buildathon 2026, Track 02 (AI Risk Manager). A bounded LLM agent
 investigates refund claims against a merchant ledger; a deterministic policy engine
 (no LLM in the decision path) decides pass/block/escalate. Full design:
 `PRD-Ledger-Oracle.md`, `ARCHITECTURE.md`. Full flow + how to test every layer:
-`TESTING.md`. Every real bug found across all sessions, with root cause: `FAILURES.md`
-— read this one, it's the most valuable file in the repo for understanding what's
-fragile.
+`TESTING.md`. Every real bug found across all sessions, with root cause: `FAILURES.md`.
 
-**Submission requirement (PRD §19, confirmed by reading it directly): public repo + a
-5-minute pitch video + architecture doc. No live deployed URL is required.** Render
-deploy is optional polish, not a blocker. The only undone deliverable in the PRD's own
-build order (§20, step 16) is recording the video.
+**Submission requirement (PRD §19): public repo + a 5-minute pitch video +
+architecture doc. No live deployed URL required.** The only undone deliverable is
+the video. Nothing is committed either — that's now also a real gap, see below.
 
-## Current state: 98/98 tests passing, nothing committed
+## Current state: 129/129 tests passing, nothing committed
 
-`python -m pytest -q` → 98 passed (was 94 at last handoff; +4 this session, see below).
-Everything is sitting **uncommitted** in the working tree, deliberately — the user
-commits under their own name, no auto-commits. Check `git status --short` before doing
-anything destructive. Current uncommitted set: `app.py`, `db.py` (new), `llm_client.py`,
-`tools.py`, `eval/generate.py`, `static/verify.html`, `supabase/schema.sql`,
-`tests/test_app.py`, `tests/test_db_backend.py`, `tests/test_llm_client.py`,
-`FAILURES.md`, plus untracked `Dockerfile`/`render.yaml`/`.dockerignore`,
-`static/admin.html`, `static/landing.html`, this file.
+`python -m pytest -q` → 129 passed (was 98 at the last handoff; +31 this session).
+Everything is sitting **uncommitted**, deliberately — user commits under their own
+name. `git status --short` shows ~34 changed/new files. Check it before doing
+anything destructive.
 
-## What this session did (continuation of the dashboards/Supabase/deploy session)
+Server run this session: `LEDGER_BACKEND=supabase uvicorn app:app --host 127.0.0.1
+--port 8000`. Landing (`/`), verify (`/verify-page`), admin (`/admin`), review
+(`/review`) all live-tested against the real Supabase project this session, not just
+pytest.
 
-Started from last handoff's state (94/94, Supabase live-verified, dashboards built,
-nothing deployed). Verified end-to-end with a fresh Groq key and Supabase MCP access,
-found and fixed **three real, previously-latent bugs** by actually running the system
-against real conditions — not just trusting the green test suite, per this project's
-own established discipline.
+## What this session did (long session, several distinct workstreams)
 
-### Bug 1 — `tools.py` only caught `sqlite3.OperationalError`, not Supabase's errors
+### 1. Safety hardening — adversarial corpus, evidence-binding fix, risk-flag wiring
 
-Every one of the 5 tool functions' DB-error handlers only caught
-`sqlite3.OperationalError` — a leftover from when the backend was SQLite-only. The
-Supabase backend (added last session) raises `psycopg2.Error` on connection failure
-instead, which fell through uncaught and crashed `/verify` with a raw 500 — directly
-violating the project's own core safety claim (`unsafe_failures == 0`, every failure
-resolves to escalate, never a crash). Same failure *class* as the `CEREBRAS_ERRORS`
-bug already in `FAILURES.md` (catching too narrow an exception type when a new backend
-is added later).
+- **`eval/adversarial_corpus.py`** (new) — prompt injection, homoglyph/zero-width UTR
+  disguises, fake `<tool>` spans, amount/order contradictions, run through the real
+  `sanitize -> parse -> decide` pipeline, zero live LLM. `unsafe_pass_count` is now a
+  headline metric on every `eval.score` run (`eval/score.py`), not just
+  fault-injection mode.
+- **Real bug fixed, `policy.py`**: `decide()` accepted `get_payment_by_utr` evidence
+  without checking the returned row's UTR matched the claim's own
+  `claimed_reference`. The agent picks its own tool-call args — nothing forced them
+  to match the claim. A wrong-UTR search (confusion or injection) could smuggle in
+  unrelated real evidence as if it verified the claim. Fixed + regression test in
+  `tests/test_policy_invariants.py`.
+- **Real bug fixed, production-path dead code**: `AMBIGUOUS_ORDER` /
+  `CONTRADICTORY_AMOUNTS` / `CONTRADICTORY_CLAIM` escalation branches existed in
+  `policy.py` (PRD 10.3) but nothing in the live request path ever populated
+  `risk_flags` — only the eval harness's synthetic ground-truth generator did. Dev-set
+  cleanliness on this class was partly an artifact of that. Fixed:
+  `sanitize.detect_risk_flags()` (new, regex heuristic, same defense-in-depth
+  convention as the existing instruction-pattern detector) runs on every real claim
+  now, wired through `agent.investigate()`'s new `risk_flags` param into `app.py`.
+  Also fixed in `agent.py`'s `finish()`: when the model stops before calling any
+  tool, `decide()` never runs at all, so its risk_flags check is unreachable — added
+  a fallback that prefers the specific adversarial flag over a generic
+  `MODEL_STOPPED` when one was set. Found live, not by inspection.
+- **`tests/test_replay_determinism.py`** (new) — re-executes real historical claims'
+  logged tool calls against the live ledger, asserts recomputed verdict matches what
+  was actually decided. Includes a mutation test proving the harness is non-vacuous.
+  Took two rounds to get right: the mutation planting logic initially assumed a tool
+  call's search arg always equals the claim's own `claimed_reference` — real parser
+  output sometimes bakes a label into the reference (`"UTR 000000000000"` instead of
+  `"000000000000"`), which is a *different*, separately-fixed bug (see below), and
+  broke that assumption. Fixed by requiring the target claim's tool-arg and
+  claimed_reference to already agree, which is the real precondition.
+- **`eval/agreement.py`** (new) + `GET /admin/agreement` — engine-vs-human agreement
+  rate from `audit.jsonl`, broken down by `reason_code`, surfaced in the admin UI.
 
-**Fix:** `db.py` gained `connection_errors()` — returns the right exception tuple per
-backend (mirrors `agent.py`'s `CEREBRAS_ERRORS` pattern exactly). `tools.py`'s 5
-`except sqlite3.OperationalError` clauses all changed to `except db.connection_errors()`.
-Regression tests in `tests/test_db_backend.py`.
+### 2. Supabase RLS — fixed live, not just written
 
-### Bug 2 — `/admin/claims*` endpoints had zero error handling
+Confirmed via Supabase MCP before touching anything: `captures`/`refunds`/
+`consumed_references` had RLS **disabled**, and `anon`/`authenticated` held not just
+`SELECT` but **INSERT/UPDATE/DELETE/TRUNCATE** (Supabase's default grants on
+SQL-editor-created tables — worse than the prior handoff's own finding, which only
+flagged the read exposure). Anyone with the anon key could have wiped the ledger.
 
-Unlike `/admin/ledger/{table}` (already wrapped in try/except), `/admin/claims`,
-`/admin/claims/{id}`, and `/admin/claims/{id}/decide` had no exception handling at all
-— also 500'd on any Supabase hiccup. Inconsistent with the pattern already established
-in the same file. **Fix:** wrapped all three in try/except, matching
-`admin_ledger_browse`'s existing pattern (`JSONResponse({"error": str(e)}, 200)`).
-Verified live and in the browser (Playwright) — Supabase down now renders a clean
-inline error message in the admin UI instead of a blank crash.
+Applied live via `apply_migration`: `REVOKE ALL` from `anon`/`authenticated`,
+`ENABLE ROW LEVEL SECURITY`, explicit `SELECT`-only policy for the app's
+`ledger_reader` role (confirmed via `pg_roles` it lacks `BYPASSRLS`, so a blank
+enable would've reproduced the exact zero-rows bug already in `FAILURES.md`).
+Verified: critical `rls_disabled` advisory cleared, `pg_policies`/grants queries
+confirm the fix, and a real end-to-end `/verify` call against the live database
+post-fix returned a correct `pass` with real evidence. `supabase/schema.sql` updated
+to match so a fresh run reproduces this.
 
-### Bug 3 — single-LLM-provider mode was structurally broken (the big one)
+### 3. Cerebras removed end-to-end, Gemini added as second provider
 
-Found only because Cerebras got disabled this session (see below) — this bug was
-**latent the entire project lifetime** because Cerebras was always configured
-alongside Groq, so the code path that has the bug never ran.
+`CerebrasError` was the *universal* "any LLM failure" exception type, imported
+directly from Cerebras's SDK and threaded through `agent.py` (`CEREBRAS_ERRORS`),
+`app.py`, `eval/faults.py`, `eval/ablation.py`, and 4 test files — not just
+`llm_client.py`. All of it renamed to a provider-neutral `LLMProviderError`, defined
+in `llm_client.py`. Gemini added via its **OpenAI-compatible endpoint**
+(`generativelanguage.googleapis.com/v1beta/openai/`, through the `openai` package) —
+deliberately not Google's native SDK, since the OpenAI-compat shape means zero
+changes to `parser.py`/`agent.py`'s existing tool-calling/schema code.
+`requirements.txt`, `.env.example`, `render.yaml` updated (`GEMINI_API_KEY` replaces
+`CEREBRAS_API_KEY`). `grep -rn cerebras --include=*.py .` is clean.
 
-`llm_client.get_client()` had: `_client = providers[0][1] if len(providers) == 1 else
-_FallbackClient(providers)` — i.e. with only one provider configured, it skipped the
-`_FallbackClient` wrapper and used the raw SDK client directly. But `_FallbackClient`
-is also what applies `_PROVIDER_MODEL_IDS`'s per-provider model-ID remap (Cerebras's
-bare `gpt-oss-120b` isn't Groq's real ID, `openai/gpt-oss-120b`) and normalizes every
-provider's own exception type to `CerebrasError` (which is all `agent.py`/`app.py`
-ever catch). Single-provider mode skipped **both**: Groq got the wrong model ID
-(`404 model_not_found`) and that exception went uncaught by `except CerebrasError`
-anywhere → raw 500, live, with a Groq-only config.
+**`GEMINI_API_KEY` was added to `.env` later this session and confirmed live**: raw
+completion, strict-mode `json_schema` extraction (`parser.py`), and tool-calling
+(`agent.py`) all tested with Gemini as the *only* configured provider (Groq
+temporarily unset for the test, so nothing was masking a Gemini failure) — real
+end-to-end `pass/OK` verdict against live Supabase data. Model id
+`gemini-2.5-flash` confirmed working as used, not just plausible. Groq alone also
+still works (live-tested repeatedly, real pass/block/escalate verdicts).
 
-**Fix:** always construct `_FallbackClient`, even for one provider — deleted the
-special case instead of adding another. Regression test in `tests/test_llm_client.py`
-(`test_get_client_wraps_single_provider_too`).
+### 4. Frontend: landing page, verify page, admin page
 
-**Side-effect caught and fixed:** that new test was the first test in the suite to
-call the real `get_client()`, which calls the real `_load_dotenv()`. `_load_dotenv()`
-uses `os.environ.setdefault(...)`, which silently leaked `LEDGER_BACKEND=supabase`
-(and the real Supabase URLs) from the repo's `.env` into the shared pytest process
-environment for every test running after it in the same run — flipping later DB-backed
-tests onto live Supabase mid-suite (6 failures, 79s runtime instead of 7s). Fixed by
-having the test pin `LEDGER_BACKEND=sqlite` via `monkeypatch.setenv` before calling
-`get_client()`, so `setdefault()` becomes a no-op. **Lesson: any future test that
-touches the real `get_client()`/`_load_dotenv()` must do the same, or it will leak.**
+- **`static/landing.html`** — rebuilt from a 49-line role-picker stub into a real
+  explainer (problem, how it decides, explicit "never moves money" section framing
+  `max_refundable_paise` as an authorization ceiling not a disbursement, proof stats,
+  demo entry cards). No React/Vite — plain HTML held up fine, matches this repo's
+  whole frontend approach; a framework rewrite was explicitly cut earlier this
+  session as zero-judging-value scope creep.
+- **`static/verify.html`** — `/verify`'s JSON response never included a
+  human-readable explanation, only the raw `reason_code`; the page rendered that raw
+  code as the primary thing a reader saw. Fixed: `app.py`'s `_verdict_response()`/
+  `_escalate_response()` now include `reason_text` (from the already-existing
+  `REASON_CODE_TEXT` map, previously only used for `/admin`), and the page shows a
+  plain-English headline ("Refund authorized" / "Claim blocked" / "Sent for human
+  review") with the raw code demoted to small secondary detail. Also added **6
+  one-click example-claim chips** (pass / block / near-match typo / ambiguous order /
+  prompt injection / Hinglish) so every decision path is reachable without typing —
+  chosen against real, live-verified Supabase data (order_4158 / UTR
+  565463516618 is a real settled capture).
+- **`static/admin.html`** — real bug found: the page's own code comment asserted a
+  response shape it had only validated against the in-memory backend; the live
+  `LEDGER_BACKEND=supabase` shape is materially flatter (`claims_history` has no
+  `stop_reason_text` column, no nested `extracted`, different note field names — see
+  `supabase/schema.sql`). This made the "Extracted" panel show `-- did not parse --`
+  for claims that parsed fine, and `max_refundable_paise` wasn't shown anywhere.
+  Fixed defensively (handles both shapes) and reorganized into 4 clearly-labeled tabs
+  (Claims / Engine vs Human / Audit chain / Ledger). **Flagged, not fixed**: the two
+  backends returning different shapes for the same logical data is a real schema/
+  `app.py` gap, not a frontend one — `claims_history` should carry the same fields
+  the in-memory path does.
+- **Parser bug fixed**: `claimed_reference` sometimes comes back with a label baked
+  in (`"UTR 526112345678"` instead of `"526112345678"`) — confirmed live, twice,
+  intermittent (clean phrasing parses clean). A real reference the ledger has would
+  wrongly resolve to `REF_NOT_IN_LEDGER`. Fixed in `parser.py`: strips `UTR`/`RRN`
+  label prefixes after extraction, deterministic hygiene, not prompt-tuning.
 
-## LLM providers: Cerebras disabled, Groq carrying it alone, verified live
+### 5. README
 
-`CEREBRAS_API_KEY` is **commented out** in `.env` — Cerebras returns a real
-`402 payment_required` ("Payment required to access this resource. Visit your billing
-tab."), a genuine account-level billing block, not fixable from code. Re-enable by
-uncommenting the line once billing is sorted on the Cerebras dashboard; the fallback
-architecture still supports it (see Bug 3 fix above — it'll work correctly as a second
-provider again with no further changes needed).
+Extended (not rewritten — the existing positioning/results/cost-model content was
+already strong) with: a route table for the live demo pages, honest Gemini-untested
+caveat, and a new "Safety hardening beyond the ablation runs" section documenting
+everything in §1-2 above with file references.
 
-Groq key was rotated this session to a new key (also in `.env`). With Bug 3 fixed,
-Groq-only mode is **confirmed live end-to-end**: parse → agent tool selection → real
-Supabase query → policy decision → real `block REF_NOT_IN_LEDGER` verdict, twice in a
-row, logged correctly to `/admin/claims`.
+## LLM providers: Groq confirmed live, flaky same as before; Gemini untested
 
-**Caveat: both Groq and the Supabase pooler showed real intermittent flakiness during
-this session's heavy testing** (rapid-fire calls, tens of LLM calls and DB connections
-in a short window) — request-to-request failures that cleared on retry, consistent
-with hitting short burst-window rate limits / connection-pool pressure rather than any
-code defect. Ruled out as a code issue by testing every layer in isolation (raw
-provider calls, `parse_claim()` directly, `agent.next_action()` directly — all worked
-standalone even when the live `/verify` endpoint was failing moments before/after).
-**Test on the actual demo machine/network before presenting** — if it's still flaky
-there, fall back to the zero-LLM engine path (`make eval`, ablation run A) as the
-resilience story, per the advisor's plan from earlier this session.
+Groq: live-tested many times this session, real results. Still shows the same
+intermittent issue as prior sessions — an ambiguous/Hinglish claim occasionally gets
+`claim_type: null` from the model, which fails Groq's strict-schema validation
+server-side as a `400`, and that's **not retried** by `parser.py` (its retry loop
+only catches local Pydantic validation failures, not the provider's own schema
+rejection) — surfaces as `MODEL_UNAVAILABLE` on the first attempt. Not fixed this
+session (flagged, not chased — would need either prompt tuning or extending the
+retry loop to catch provider-side 400s too). Real risk for the demo: a judge typing
+an ambiguous claim could hit this.
 
-## Supabase: still live, one real security finding not yet acted on
+Gemini: code-complete, `GEMINI_API_KEY` never added to `.env` this session, so never
+actually called. Add the key and re-test before relying on it as a real fallback.
 
-Confirmed via Supabase MCP (`list_tables`, `get_advisors` against project
-`yngbbsrzxpimvogtqvpm`, "Ledger Oracle", ACTIVE_HEALTHY): schema matches expectations,
-500 captures / 120 refunds / 6 consumed_references / claims_history all present and
-populated.
+## Known gaps, not fixed this session
 
-**Security finding, flagged, deliberately not auto-fixed:** `captures`, `refunds`,
-`consumed_references` have RLS disabled and are exposed over Supabase's public REST
-API (PostgREST) to the `anon`/`authenticated` roles. Last session's reasoning for
-disabling RLS ("redundant with GRANT, not a downgrade") only covers the app's direct
-Postgres pooler connections (`postgres.<ref>`, `ledger_reader.<ref>` — real Postgres
-roles) — it misses that Supabase auto-exposes every public table over REST to
-`anon`/`authenticated` too. **Anyone with the Supabase anon/publishable key can
-currently read/write these three tables directly over HTTP, bypassing the app and the
-policy engine entirely.** Re-enabling RLS blank would reproduce the exact
-`ledger_reader` zero-rows bug already in `FAILURES.md` — it needs a policy scoped to
-the app's specific roles, not a blind re-enable. Needs the user's decision; SQL can be
-written on request. `claims_history` is fine as-is (RLS on, no policy, but the app
-writes via the owner role which bypasses RLS anyway).
-
-`.env` still has real Supabase credentials (gitignored, never committed) — the user
-was already told last session to consider rotating the DB password once convenient;
-that advice still stands, and now extends to both LLM keys too (all of them have been
-pasted in chat across sessions).
+- **`claims_history` schema drift between backends** — see §4 above (admin.html
+  finding). In-memory path and Supabase path return different field shapes for
+  logically the same data.
+- **Groq schema-validation 400s aren't retried** — see above.
+- **`admin_claim_decide` has no server-side guard** against deciding an
+  already-non-open claim (flagged in an earlier pass this session, still open — one
+  real log entry hit this).
+- **CONTRADICTORY_CLAIM detector is narrow** (`sanitize.detect_risk_flags()`) — a
+  specific negation+refund-request phrase pattern, not general contradiction
+  detection. Documented ceiling, matches this repo's existing defense-in-depth
+  convention (not meant to be exhaustive).
 
 ## What's NOT done yet
 
-- **Video (PRD step 16)** — the only actually-required-and-missing deliverable. Script
-  exists in PRD §19 (5-minute beat-by-beat table). Nothing recorded yet.
-- **Supabase RLS policy** — see security finding above. Needs user's go-ahead.
-- **One clean final ablation run** — `README.md`'s run B/C numbers are still from a
-  quota-contaminated run per `FAILURES.md`'s last entry. Not re-run this session
-  (would need sustained LLM availability; see flakiness caveat above). Run A (zero-LLM,
-  engine-only) numbers are already clean and final.
-- **Vercel frontend split** — still explicitly cut from the plan (advisor's call,
-  agreed this session): zero judging-axis value, Render already serves the static
-  pages via `FileResponse`, adds CORS + 4-page refactor for nothing. Don't do this
-  unless the user explicitly asks again and it gets its own brainstorm/spec.
-- **Not deployed to Render** — still optional per the PRD (see top of this file).
-  Config exists (`render.yaml`, `Dockerfile`, `.dockerignore`), nothing pushed/deployed.
-  Before deploying: grep those three files for a real Supabase connection string —
-  none currently found, but check again if they change.
-- **Admin auth** — still explicitly conditional on Render deploy happening. `/admin/*`
-  has zero auth; cosmetic risk locally, real risk if publicly deployed. Skip if the
-  demo stays local.
-- **Buildathon eligibility** — PRD flags "students-only per the live page," unconfirmed
-  this session too. Worth confirming before more build time, not a code task.
+- **Video (PRD step 16)** — still the only actually-required-and-missing deliverable.
+- **Nothing committed** — `git status --short` shows ~34 files. Public repo is a
+  graded deliverable; this now blocks it same as last handoff did.
+- **One clean final ablation run (B/C)** — still not re-run, still needs sustained
+  LLM availability this session didn't reliably have. README's caveat on this stands.
+- **Render deploy + admin auth** — still optional/deferred, unchanged from last
+  handoff.
+- **Buildathon eligibility** ("students-only per the live page") — still unconfirmed
+  across three sessions now. Two-minute check, not a code task, worth doing before
+  more build time goes in.
 
 ## Immediate next steps, in order
 
-1. `git status --short` to see the full uncommitted diff (listed above) before doing
-   anything.
-2. `python -m pytest -q` to reconfirm 98/98 (state may have drifted).
-3. Check Groq's dashboard (console.groq.com) for real quota/rate-limit state before
-   any live demo — this session hit real flakiness under heavy testing volume and
-   burned real quota; don't assume it's fully recovered without checking.
-4. If presenting soon: record the video (PRD §19 script) using the local `uvicorn`
-   demo path, not a fresh deploy — a deploy that breaks 30 minutes before submission is
+1. `git status --short` + `python -m pytest -q` to reconfirm state (129/129 expected).
+2. If presenting soon: record the video using the local `uvicorn` demo
+   (`LEDGER_BACKEND=supabase`, or `sqlite` if network's unreliable that day) — same
+   reasoning as every prior handoff, a fresh deploy breaking pre-submission is
    unrecoverable, local isn't.
-5. If time remains after the video: decide on the Supabase RLS policy (needs user
-   input on what roles/access pattern to scope it to), then optionally Render deploy
-   and admin auth, in that order, per this session's advisor-endorsed priority.
+3. Commit. Nothing about this being deferred has changed across sessions — do it
+   before the next context runs out too.
+4. If time remains: the Groq-400-not-retried gap and the `claims_history` schema
+   drift are the two most concrete, scoped next fixes.

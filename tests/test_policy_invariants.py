@@ -18,6 +18,21 @@ def test_block_ref_not_in_ledger():
     assert v.reason_code == "REF_NOT_IN_LEDGER"
 
 
+def test_wrong_utr_evidence_does_not_verify_claimed_reference():
+    """Regression: the agent picks get_payment_by_utr's search arg itself
+    (agent.py:next_action), nothing constrains it to equal claim.claimed_reference.
+    A real-but-unrelated capture returned for a different UTR (LLM confusion, or an
+    injection attempt steering the tool call) must never verify *this* claim's
+    reference just because some PaymentLookupResult with matches exists in evidence.
+    Before this filter existed in decide(), this fixture resolved to an unsafe pass.
+    """
+    unrelated = capture(capture_id="pay_unrelated", utr="999999999999", amount_paise=249900)
+    v = decide(state(extracted=claim(claimed_reference="526112345678"),
+                      evidence=[lookup_result(matches=[unrelated])]))
+    assert v.decision != "pass"
+    assert v.reason_code == "REF_NOT_IN_LEDGER"
+
+
 def test_block_ref_already_consumed_i3():
     c = capture()
     v = decide(

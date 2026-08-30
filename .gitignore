@@ -11,4 +11,4 @@ data/MANIFEST.json
 .claude
 .playwright/
 .playwright-mcp/
-
+.agents/

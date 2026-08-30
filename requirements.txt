@@ -1,5 +1,5 @@
-cerebras-cloud-sdk
 groq
+openai
 psycopg2-binary
 fastapi
 uvicorn[standard]

@@ -1,4 +1,4 @@
-from sanitize import sanitize
+from sanitize import detect_risk_flags, sanitize
 
 
 def test_clean_message_no_flags():
@@ -35,3 +35,23 @@ def test_normal_message_unaffected_by_homoglyph_pass():
     text, flags = sanitize("UTR 526112345678, order 4471")
     assert "HOMOGLYPH_NORMALIZED" not in flags
     assert text == "UTR 526112345678, order 4471"
+
+
+def test_detects_ambiguous_order():
+    flags = detect_risk_flags("Refund my payment for order order_1234 or maybe order_5678, not sure which.")
+    assert flags == ["AMBIGUOUS_ORDER"]
+
+
+def test_detects_contradictory_amounts():
+    flags = detect_risk_flags("I paid Rs 2,499, no wait Rs 4,999, for order order_1234, please refund.")
+    assert flags == ["CONTRADICTORY_AMOUNTS"]
+
+
+def test_detects_contradictory_claim():
+    flags = detect_risk_flags("I never got charged for order order_1234. Refund both charges please.")
+    assert flags == ["CONTRADICTORY_CLAIM"]
+
+
+def test_clean_claim_has_no_risk_flags():
+    assert detect_risk_flags("Hi, I paid Rs 2499 for order 4471, please refund.") == []
+    assert detect_risk_flags("UTR 526112345678, order 4471, please refund.") == []

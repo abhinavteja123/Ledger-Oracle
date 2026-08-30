@@ -17,21 +17,19 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from cerebras.cloud.sdk import CerebrasError
-
 import config
 import tools
-from llm_client import MODEL, get_client
+from llm_client import MODEL, LLMProviderError, get_client
 from models import InvestigationState, StructuredClaim, ToolCall, ToolError, Verdict
 from policy import decidable, decide
 
-# CerebrasError is the SDK's base exception -- every specific error (APIConnectionError,
-# RateLimitError, AuthenticationError, ...) subclasses it, and so does the config error
-# raised by the client constructor itself when no API key is set at all (a case with no
-# more specific subclass of its own). Catching the base class here means "any way the
-# LLM boundary can fail" reliably degrades to MODEL_UNAVAILABLE, not just the subset of
-# failure modes anyone happened to enumerate.
-CEREBRAS_ERRORS = (CerebrasError,)
+# LLMProviderError is llm_client.py's provider-neutral exception -- every configured
+# provider's own SDK exception (rate limit, auth, connection, ...) gets normalized to
+# this one type by _FallbackClient before it ever reaches here, including the config
+# error raised when no API key is set at all. Catching this one type here means "any
+# way the LLM boundary can fail" reliably degrades to MODEL_UNAVAILABLE, not just the
+# subset of failure modes anyone happened to enumerate.
+LLM_ERRORS = (LLMProviderError,)
 
 # Each tool's one string argument, and which decidable()-relevant evidence type it
 # feeds (used only for building schemas here -- decidable() itself lives in policy.py).
@@ -91,7 +89,7 @@ def _now() -> str:
 def next_action(state: InvestigationState, client, remaining_tools: set[str]):
     """Ask the model which tool to call next. Returns (tool_name, args_dict), a
     ("__not_permitted__"|"__invalid_args__", detail_dict) error tuple, or None to stop.
-    Raises only cerebras SDK exceptions (caller handles as MODEL_UNAVAILABLE)."""
+    Raises only LLM_ERRORS (caller handles as MODEL_UNAVAILABLE)."""
     schemas = [s for s in TOOL_SCHEMAS if s["function"]["name"] in remaining_tools]
     if not schemas:
         return None
@@ -135,12 +133,24 @@ def investigate(
     client=None,
     consumed_references: frozenset = frozenset(),
     db_path: str = tools.DB_PATH,
+    risk_flags: Optional[list[str]] = None,
 ) -> tuple[InvestigationState, Verdict]:
     """Run one bounded investigation. Never raises past this function; always returns
     a real Verdict. Only a decidable() state reaches pass/block -- everything else,
-    including every failure path below, escalates."""
+    including every failure path below, escalates.
+
+    `risk_flags` seeds state.risk_flags with claim-text-level findings gathered
+    before this call (e.g. sanitize.detect_risk_flags()) -- policy.decide()'s
+    DECIDABILITY GATE reads these to short-circuit AMBIGUOUS_ORDER /
+    CONTRADICTORY_AMOUNTS / CONTRADICTORY_CLAIM claims (PRD 10.3) before any ledger
+    evidence is consulted. Previously nothing populated this, so those branches were
+    unreachable in production -- see FAILURES.md.
+    """
     state = InvestigationState(claim_id=claim_id, raw_message=raw_message,
-                                extracted=extracted, started_at=_now())
+                                extracted=extracted, started_at=_now(),
+                                risk_flags=list(risk_flags) if risk_flags else [])
+
+    _ADVERSARIAL_FLAGS = ("AMBIGUOUS_ORDER", "CONTRADICTORY_AMOUNTS", "CONTRADICTORY_CLAIM")
 
     def finish(status: str, stop_reason: str) -> tuple[InvestigationState, Verdict]:
         state.status = status
@@ -148,8 +158,16 @@ def investigate(
         if decidable(state):
             verdict = decide(state, consumed_references=consumed_references)
         else:
+            # decide()'s own risk_flags check (policy.py's DECIDABILITY GATE) never
+            # runs here since decidable() is False -- e.g. the model extracted nothing
+            # to search on and stopped before calling any tool. Prefer the specific
+            # adversarial-class flag over the generic stop_reason when one was set, so
+            # a live AMBIGUOUS_ORDER/CONTRADICTORY_AMOUNTS/CONTRADICTORY_CLAIM claim
+            # doesn't surface as an uninformative MODEL_STOPPED. Found live this
+            # session testing the real /verify endpoint against this exact case.
+            reason_code = next((f for f in _ADVERSARIAL_FLAGS if f in state.risk_flags), stop_reason)
             verdict = Verdict(
-                decision="escalate", max_refundable_paise=0, reason_code=stop_reason,
+                decision="escalate", max_refundable_paise=0, reason_code=reason_code,
                 why_not_block="Investigation stopped before enough evidence was gathered "
                                f"to resolve the claim ({stop_reason}).",
                 degraded_path=True,
@@ -178,7 +196,7 @@ def investigate(
 
         try:
             action = next_action(state, client, remaining_tools)
-        except CEREBRAS_ERRORS:
+        except LLM_ERRORS:
             return finish("escalated", "MODEL_UNAVAILABLE")
 
         if action is None:
