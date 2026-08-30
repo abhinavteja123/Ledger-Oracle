@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from llm_client import LLMProviderError
 from parser import ParseFailedError, parse_claim
 
 
@@ -103,3 +104,51 @@ def test_reference_without_label_is_unaffected():
     client = _FakeClient([_valid_claim_json(claimed_reference="526112345678")])
     claim = parse_claim("some text", client=client)
     assert claim.claimed_reference == "526112345678"
+
+
+class _RaisesThenSucceeds:
+    """Simulates a provider-side rejection (e.g. Groq's strict-schema 400) on the
+    first call, a clean response on the second."""
+    def __init__(self, ok_json: str):
+        self.calls = 0
+        self._ok_json = ok_json
+
+        class _Completions:
+            def create(_self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise LLMProviderError("simulated provider 400")
+                return _Resp(self._ok_json)
+
+        class _Chat:
+            completions = _Completions()
+
+        self.chat = _Chat()
+
+
+def test_provider_error_is_retried_not_raised_immediately():
+    client = _RaisesThenSucceeds(_valid_claim_json())
+    claim = parse_claim("some text", client=client)
+    assert claim.order_id == "order_4471"
+    assert client.calls == 2
+
+
+def test_provider_error_on_every_attempt_still_raises():
+    class _AlwaysRaises:
+        def __init__(self):
+            self.calls = 0
+
+            class _Completions:
+                def create(_self, **kwargs):
+                    self.calls += 1
+                    raise LLMProviderError("simulated outage")
+
+            class _Chat:
+                completions = _Completions()
+
+            self.chat = _Chat()
+
+    client = _AlwaysRaises()
+    with pytest.raises(LLMProviderError):
+        parse_claim("some text", client=client)
+    assert client.calls == 2  # still bounded by MAX_PARSE_ATTEMPTS, not infinite

@@ -269,3 +269,34 @@ def test_llm_unavailable_does_not_crash(client_app, monkeypatch):
     body = res.json()
     assert body["decision"] == "escalate"
     assert body["reason_code"] == "MODEL_UNAVAILABLE"
+
+
+def test_repeated_claim_abuse_blocks_after_threshold(client_app, monkeypatch):
+    """Same order_id, 3 genuinely denied claims (REF_NOT_IN_LEDGER, an adverse
+    reason code) -> the 4th automatic attempt on that order blocks outright,
+    without even needing a tool_plan (the abuse gate fires before any lookup)."""
+    for _ in range(3):
+        _install_fake_client(
+            monkeypatch, BLOCK_CLAIM_JSON, [("get_payment_by_utr", '{"utr": "999999999999"}')],
+        )
+        res = client_app.post("/verify", json={"text": "paid via UTR 999999999999"})
+        assert res.json()["reason_code"] == "REF_NOT_IN_LEDGER"
+
+    _install_fake_client(monkeypatch, BLOCK_CLAIM_JSON, [])
+    res = client_app.post("/verify", json={"text": "paid via UTR 999999999999"})
+    body = res.json()
+    assert body["decision"] == "block"
+    assert body["reason_code"] == "REPEATED_CLAIM_ABUSE"
+
+
+def test_admin_claim_decide_rejects_second_decision(client_app, monkeypatch):
+    _install_fake_client(monkeypatch, ESCALATE_CLAIM_JSON, [])
+    client_app.post("/verify", json={"text": "refund pls"})
+    claim_id = client_app.get("/admin/claims").json()["claims"][0]["claim_id"]
+
+    first = client_app.post(f"/admin/claims/{claim_id}/decide", json={"action": "reject", "note": "n1"})
+    assert first.json() == {"ok": True}
+
+    second = client_app.post(f"/admin/claims/{claim_id}/decide", json={"action": "reject", "note": "n2"})
+    assert "error" in second.json()
+    assert "already decided" in second.json()["error"]

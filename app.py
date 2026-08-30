@@ -7,12 +7,15 @@ than a 500 -- "every failure resolves to a terminal state, default is escalate" 
 at the API boundary too, not just inside the agent loop.
 """
 import json
+import os
+import pathlib
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
@@ -22,11 +25,37 @@ from agent import LLM_ERRORS, investigate
 from audit import record_event
 from audit.verify import verify as audit_verify
 from eval.agreement import compute_agreement
+from llm_client import load_dotenv
 from models import InvestigationState, Verdict
 from parser import ParseFailedError, parse_claim
 from sanitize import detect_risk_flags, sanitize
 
+# Populate os.environ from .env once, at process startup -- not lazily on first LLM
+# call (see llm_client.load_dotenv's docstring). db.py reads SUPABASE_DB_URL /
+# SUPABASE_READONLY_DB_URL directly via os.environ, so /admin/* and /review/*
+# routes need this done before they run too, not just /verify.
+#
+# Gated on LEDGER_BACKEND=supabase, not unconditional: tests import this module
+# with LEDGER_BACKEND unset (sqlite default) and deliberately never configure real
+# LLM keys, relying on get_client() raising LLMProviderError fast when no provider
+# is configured to catch any test that forgot to inject a fake client. Loading real
+# GROQ_API_KEY/GEMINI_API_KEY from .env unconditionally here silently removed that
+# safety net for the whole suite -- several tests started making real, rate-limited
+# network calls instead of failing fast. Found by running the full suite, not by
+# inspection: 13 tests failed together, each passed in isolation (shared network
+# rate limit across the session), the classic fingerprint of this exact mistake.
+if os.environ.get("LEDGER_BACKEND") == "supabase":
+    load_dotenv()
+
 app = FastAPI(title="Ledger Oracle")
+# All four pages (/, /verify-page, /admin, /review) are now one Vite-built React SPA
+# (see frontend/), built into static/dist and served as static assets here; react-router
+# picks the right page client-side from the URL. Absolute path, not "static/dist" -- tests
+# chdir into a tmp_path fixture dir before this module's first import, and a relative
+# StaticFiles directory is resolved at mount time (this line), not per-request, so a
+# relative path would 404 the moment any test imports app.py from outside the repo root.
+STATIC_DIST = pathlib.Path(__file__).resolve().parent / "static" / "dist"
+app.mount("/static", StaticFiles(directory=str(STATIC_DIST)), name="static")
 
 REASON_CODE_TEXT = {
     "OK": "The claim matched a real, settled payment for the full amount -- refund authorized up to that amount.",
@@ -43,6 +72,7 @@ REASON_CODE_TEXT = {
     "CONTRADICTORY_AMOUNTS": "The claim states more than one amount.",
     "CONTRADICTORY_CLAIM": "The claim contradicts itself.",
     "RAIL_NOT_COVERED": "The claimed payment rail isn't one this ledger tracks at all.",
+    "REPEATED_CLAIM_ABUSE": "This order has already had multiple claims denied; further automatic attempts are blocked.",
     "TOOL_UNAVAILABLE": "The ledger tools were unavailable during the investigation.",
     "STEP_BUDGET_EXHAUSTED": "The investigation used its full step budget without resolving.",
     "TIME_BUDGET_EXHAUSTED": "The investigation ran out of time without resolving.",
@@ -192,6 +222,36 @@ class HistoryStore:
             rows = [r for r in rows if r["status"] == status]
         return list(reversed(rows))
 
+    def count_adverse_attempts(self, order_id: str) -> int:
+        """How many *prior* claims on this order_id ended in one of
+        config.ADVERSE_REASON_CODES -- feeds policy.decide()'s REPEATED_CLAIM_ABUSE
+        gate (see app.py's /verify). Handles both backends' shapes: the supabase
+        claims_history table stores a flat `order_id` column, the in-memory row nests
+        it under row["extracted"]["order_id"] (see _verdict_response()) -- same
+        dual-shape defensiveness admin.html already needed for this table.
+        """
+        if not order_id:
+            return 0
+        codes = tuple(config.ADVERSE_REASON_CODES)
+        if db.backend() == "supabase":
+            conn = db.get_owner_connection()
+            try:
+                placeholders = ",".join("?" * len(codes))
+                row = conn.execute(
+                    f"SELECT COUNT(*) AS n FROM claims_history WHERE order_id=? "
+                    f"AND reason_code IN ({placeholders})",
+                    (order_id, *codes),
+                ).fetchone()
+                return int(row["n"]) if row else 0
+            finally:
+                conn.close()
+        count = 0
+        for row in self._rows.values():
+            extracted = row.get("extracted") or {}
+            if extracted.get("order_id") == order_id and row.get("reason_code") in config.ADVERSE_REASON_CODES:
+                count += 1
+        return count
+
     def get(self, claim_id: str) -> Optional[dict]:
         if db.backend() == "supabase":
             conn = db.get_owner_connection()
@@ -208,6 +268,14 @@ class HistoryStore:
         row = self.get(claim_id)
         if row is None:
             return None
+        if row.get("status") == "decided":
+            # Real gap flagged in an earlier session, never fixed: nothing stopped a
+            # second /admin/claims/{id}/decide call on a claim already decided -- a
+            # double-approve would try to INSERT the same reference into
+            # consumed_references twice (fails loudly on the PK, but only by luck of
+            # that table having one), and an approve-then-reject would silently
+            # overwrite the note/action with no record either happened.
+            raise ValueError(f"claim {claim_id} was already decided; refusing to decide it again")
         if action == "approve" and row.get("resolved_reference"):
             conn = db.get_owner_connection(tools.DB_PATH)
             try:
@@ -239,10 +307,10 @@ class HistoryStore:
 history_store = HistoryStore()
 
 # Legacy in-memory review-queue store, still backing /review/* for the older
-# static/review.html page. HistoryStore (above) is the newer, complete record --
-# every claim, pass/block/escalate -- that /admin/* reads from. Both are populated
-# from the same /verify call; kept side by side rather than migrating /review/*
-# onto HistoryStore too, since static/review.html's contract wasn't part of this task.
+# Review page (frontend/src/pages/Review.jsx). HistoryStore (above) is the newer,
+# complete record -- every claim, pass/block/escalate -- that /admin/* reads from.
+# Both are populated from the same /verify call; kept side by side rather than
+# migrating /review/* onto HistoryStore too, since that contract wasn't part of this task.
 REVIEW_QUEUE: dict[str, dict] = {}
 APPROVED_REFERENCES: set[str] = set()
 
@@ -260,22 +328,22 @@ class DecideRequest(BaseModel):
 
 @app.get("/")
 def landing():
-    return FileResponse("static/landing.html")
+    return FileResponse(str(STATIC_DIST / "index.html"))
 
 
 @app.get("/verify-page")
 def verify_page():
-    return FileResponse("static/verify.html")
+    return FileResponse(str(STATIC_DIST / "index.html"))
 
 
 @app.get("/admin")
 def admin_page():
-    return FileResponse("static/admin.html")
+    return FileResponse(str(STATIC_DIST / "index.html"))
 
 
 @app.get("/review")
 def review_page():
-    return FileResponse("static/review.html")
+    return FileResponse(str(STATIC_DIST / "index.html"))
 
 
 @app.post("/verify")
@@ -316,8 +384,10 @@ def verify(req: VerifyRequest):
     record_event("parsed", claim_id, {"extracted": extracted.model_dump()})
 
     consumed = _load_ledger_consumed_references(tools.DB_PATH) | frozenset(APPROVED_REFERENCES)
+    prior_adverse_attempts = history_store.count_adverse_attempts(extracted.order_id)
     state, verdict = investigate(claim_id, req.text, extracted=extracted, consumed_references=consumed,
-                                  risk_flags=detect_risk_flags(clean_text))
+                                  risk_flags=detect_risk_flags(clean_text),
+                                  prior_adverse_attempts=prior_adverse_attempts)
 
     for call, evidence in zip(state.tools_called, state.evidence):
         record_event("tool_call", claim_id, {"tool": call.tool, "args": call.args})
@@ -400,7 +470,7 @@ def admin_agreement(path: str = "audit.jsonl"):
     # reviewer_decision/admin_decision events). Reads audit.jsonl, not HistoryStore --
     # HistoryStore.decide() is only ever reached via /admin/claims/{id}/decide, so it
     # would silently miss every reviewer_decision made through the older /review/*
-    # queue (static/review.html). audit.jsonl has both event types.
+    # queue (frontend/src/pages/Review.jsx). audit.jsonl has both event types.
     try:
         return compute_agreement(path)
     except Exception as e:

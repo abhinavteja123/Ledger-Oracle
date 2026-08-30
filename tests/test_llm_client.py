@@ -53,7 +53,7 @@ def test_each_provider_gets_its_own_model_id():
     client = _FallbackClient([("groq", p1), ("gemini", p2)])
     client.chat.completions.create(model="gpt-oss-120b")
     assert p1.calls[0]["model"] == "openai/gpt-oss-120b"
-    assert p2.calls[0]["model"] == "gemini-2.5-flash"
+    assert p2.calls[0]["model"] == "gemini-3.6-flash"
 
 
 def test_get_client_wraps_single_provider_too(monkeypatch):

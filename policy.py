@@ -11,7 +11,7 @@ world a Python set literal, which is what test_policy_is_offline actually needs 
 """
 from typing import Optional
 
-from config import AMOUNT_TOLERANCE_PAISE, ENGINE_VERSION
+from config import ABUSE_REPEAT_THRESHOLD, AMOUNT_TOLERANCE_PAISE, ENGINE_VERSION
 from models import (
     CaptureRow,
     DuplicateCheckResult,
@@ -59,15 +59,23 @@ def _status_matches(state: InvestigationState, ref: Optional[str]) -> list:
     return out
 
 
-def decidable(state: InvestigationState) -> bool:
+def decidable(state: InvestigationState, prior_adverse_attempts: int = 0) -> bool:
     """Can decide() reach a verdict from the evidence gathered so far?
 
     Used by the agent loop (PRD 9.2) for graceful degradation: if a tool fails but
     enough evidence already exists to decide, there is no need to escalate on that
     failure alone.
+
+    `prior_adverse_attempts` past ABUSE_REPEAT_THRESHOLD also short-circuits this to
+    True -- decide()'s abuse gate fires before any ledger evidence, so there is no
+    reason to spend a real tool call (or LLM step) gathering evidence for a claim
+    that is going to block on claim history alone. Mirrors how risk_flags already
+    make claim-text-level state decidable without evidence.
     """
     if state.extracted is None:
         return False
+    if prior_adverse_attempts >= ABUSE_REPEAT_THRESHOLD:
+        return True
     claim = state.extracted
     lookup = _latest(state, PaymentLookupResult)
     order_payments = _latest(state, OrderPaymentsResult)
@@ -106,7 +114,11 @@ def _block(reason_code: str, invariants: list, degraded: bool) -> Verdict:
     )
 
 
-def decide(state: InvestigationState, consumed_references: frozenset = frozenset()) -> Verdict:
+def decide(
+    state: InvestigationState,
+    consumed_references: frozenset = frozenset(),
+    prior_adverse_attempts: int = 0,
+) -> Verdict:
     invariants: list[InvariantResult] = []
     degraded = bool(state.failed_tools) or bool(state.risk_flags)
     claim = state.extracted
@@ -117,6 +129,18 @@ def decide(state: InvestigationState, consumed_references: frozenset = frozenset
             "INSUFFICIENT_CLAIM_DATA", invariants,
             "Claim did not parse into a structured record; nothing to evaluate.", degraded,
         )
+
+    # REPEATED-CLAIM ABUSE GATE -- fires before any ledger evidence is consulted,
+    # same reasoning as the risk_flags block below: this is about the claim's own
+    # history, not about evidence a tool call could gather. `prior_adverse_attempts`
+    # is computed by the caller (app.py) by counting this order_id's own past
+    # claims that ended in one of config.ADVERSE_REASON_CODES -- deliberately
+    # excludes retry-invited outcomes (REF_MAY_BE_IN_FLIGHT, TOOL_UNAVAILABLE,
+    # MODEL_UNAVAILABLE, PARSE_FAILED, REF_NEAR_MATCH_TYPO) so a claim the engine
+    # itself told the customer to resubmit never counts against them.
+    if prior_adverse_attempts >= ABUSE_REPEAT_THRESHOLD:
+        return _block("REPEATED_CLAIM_ABUSE", invariants, degraded)
+
     # Claim-level red flags (PRD 10.3 ADVERSARIAL class) short-circuit before any
     # ledger evidence is consulted -- these are about the claim text itself being
     # unreasonable to act on, set upstream by the sanitizer/parser into risk_flags.

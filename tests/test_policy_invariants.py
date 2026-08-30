@@ -183,6 +183,35 @@ def test_duplicate_charge_no_reference_resolves_via_order_evidence():
     assert v.decision == "pass"
 
 
+def test_block_repeated_claim_abuse_at_threshold():
+    # Third prior adverse claim on this order_id -> this one blocks outright, no
+    # evidence needed at all (mirrors REPEATED_CLAIM_ABUSE firing before ledger
+    # lookups run).
+    v = decide(state(extracted=claim()), prior_adverse_attempts=3)
+    assert v.decision == "block"
+    assert v.reason_code == "REPEATED_CLAIM_ABUSE"
+
+
+def test_pass_still_reachable_below_abuse_threshold():
+    # Two prior adverse attempts is not yet abuse -- a legitimate claim on this order
+    # must still be able to pass on its own evidence.
+    c = capture()
+    v = decide(
+        state(extracted=claim(), evidence=[lookup_result(matches=[c])]),
+        prior_adverse_attempts=2,
+    )
+    assert v.decision == "pass"
+
+
+def test_decidable_true_on_abuse_threshold_alone():
+    # The agent loop must short-circuit to decide() on claim history alone, without
+    # spending a tool call gathering evidence it will never need.
+    from policy import decidable
+    st = state(extracted=claim())
+    assert decidable(st, prior_adverse_attempts=3) is True
+    assert decidable(st, prior_adverse_attempts=2) is False
+
+
 if __name__ == "__main__":
     import sys
     import pytest as _pytest

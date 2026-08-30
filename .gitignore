@@ -12,3 +12,4 @@ data/MANIFEST.json
 .playwright/
 .playwright-mcp/
 .agents/
+frontend/node_modules/

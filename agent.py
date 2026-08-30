@@ -134,6 +134,7 @@ def investigate(
     consumed_references: frozenset = frozenset(),
     db_path: str = tools.DB_PATH,
     risk_flags: Optional[list[str]] = None,
+    prior_adverse_attempts: int = 0,
 ) -> tuple[InvestigationState, Verdict]:
     """Run one bounded investigation. Never raises past this function; always returns
     a real Verdict. Only a decidable() state reaches pass/block -- everything else,
@@ -155,8 +156,11 @@ def investigate(
     def finish(status: str, stop_reason: str) -> tuple[InvestigationState, Verdict]:
         state.status = status
         state.stop_reason = stop_reason
-        if decidable(state):
-            verdict = decide(state, consumed_references=consumed_references)
+        if decidable(state, prior_adverse_attempts=prior_adverse_attempts):
+            verdict = decide(
+                state, consumed_references=consumed_references,
+                prior_adverse_attempts=prior_adverse_attempts,
+            )
         else:
             # decide()'s own risk_flags check (policy.py's DECIDABILITY GATE) never
             # runs here since decidable() is False -- e.g. the model extracted nothing
@@ -185,7 +189,7 @@ def investigate(
     seen_calls: set[tuple] = set()
 
     while True:
-        if decidable(state):
+        if decidable(state, prior_adverse_attempts=prior_adverse_attempts):
             return finish("decided", "DECIDABLE")
         if state.steps_used >= config.MAX_INVESTIGATION_STEPS:
             return finish("escalated", "STEP_BUDGET_EXHAUSTED")
@@ -200,7 +204,8 @@ def investigate(
             return finish("escalated", "MODEL_UNAVAILABLE")
 
         if action is None:
-            return finish("decided" if decidable(state) else "escalated", "MODEL_STOPPED")
+            decided = decidable(state, prior_adverse_attempts=prior_adverse_attempts)
+            return finish("decided" if decided else "escalated", "MODEL_STOPPED")
 
         name, payload = action
 

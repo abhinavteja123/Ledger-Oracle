@@ -10,7 +10,7 @@ import json
 import re
 
 from config import MAX_PARSE_ATTEMPTS
-from llm_client import MODEL, get_client
+from llm_client import MODEL, LLMProviderError, get_client
 from models import StructuredClaim
 
 # ponytail: the model occasionally bakes a label word into claimed_reference (e.g.
@@ -71,7 +71,19 @@ def parse_claim(text: str, client=None) -> StructuredClaim:
 
     last_error: Exception | None = None
     for attempt in range(1, MAX_PARSE_ATTEMPTS + 1):
-        raw = _call(client, messages)
+        try:
+            raw = _call(client, messages)
+        except LLMProviderError:
+            # A provider-side rejection (e.g. Groq's strict-schema validator 400ing on
+            # claim_type: null -- see FAILURES.md) used to bubble straight past this
+            # loop on the first attempt, never getting the retry a local Pydantic
+            # failure below already gets. Same messages, no correction to append --
+            # there's no `raw` output to critique. Re-raise on the last attempt so
+            # app.py's `except LLM_ERRORS` still reports MODEL_UNAVAILABLE, not a
+            # generic PARSE_FAILED.
+            if attempt == MAX_PARSE_ATTEMPTS:
+                raise
+            continue
         try:
             claim = StructuredClaim.model_validate_json(raw)
             if claim.claimed_reference:

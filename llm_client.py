@@ -25,23 +25,32 @@ class LLMProviderError(Exception):
 
 
 # ponytail: same logical model across providers, but provider catalogs use different
-# ID strings for what's nominally the same open model. Groq's exact current ID for
-# gpt-oss-120b is unverified in this build (no GROQ_API_KEY was available to test
-# against) -- confirm against console.groq.com/docs/models before relying on it live.
-# Gemini's id below is likewise unverified in this build (no GEMINI_API_KEY was
-# available to test against) -- confirm against Google's live OpenAI-compat docs
-# (ai.google.dev) before relying on it; gemini-2.0-flash is the cheaper/older fallback
-# if gemini-2.5-flash turns out unavailable.
+# ID strings for what's nominally the same open model. Groq's id confirmed live this
+# session (real tool-calling response through get_client()'s wrapper, see the Playwright
+# E2E pass this session). Gemini's id was NOT confirmed live in an earlier session and
+# had since gone stale: both gemini-2.5-flash and gemini-2.0-flash now 404 live
+# ("no longer available to new users... use models/gemini-3.6-flash") -- found running
+# a real end-to-end test, not from docs. gemini-3.6-flash confirmed live (real content
+# returned) before landing this change. Re-verify against ai.google.dev if this 404s
+# again later -- Google's deprecation cadence here is not this repo's to control.
 _PROVIDER_MODEL_IDS = {
     "groq": "openai/gpt-oss-120b",
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.6-flash",
 }
 
 _client = None
 
 
-def _load_dotenv():
+def load_dotenv():
     # ponytail: no python-dotenv dependency for two lines of parsing.
+    #
+    # Public (was module-private): previously only called lazily from get_client(),
+    # so SUPABASE_DB_URL/SUPABASE_READONLY_DB_URL (read directly via os.environ in
+    # db.py, which never called this) stayed unset for any process whose first
+    # request was /admin/* or /review/* rather than /verify -- a real KeyError hit
+    # live testing the Supabase-backed admin console cold. app.py now calls this
+    # once at import time so every route sees a populated environment regardless of
+    # request order.
     env_path = Path(__file__).parent / ".env"
     if not env_path.exists():
         return
@@ -78,7 +87,7 @@ class _FallbackClient:
 def get_client():
     global _client
     if _client is None:
-        _load_dotenv()
+        load_dotenv()
         providers: list[tuple[str, object]] = []
         if os.environ.get("GROQ_API_KEY"):
             from groq import Groq
