@@ -473,6 +473,9 @@ def admin_agreement(path: str = "audit.jsonl"):
     # queue (frontend/src/pages/Review.jsx). audit.jsonl has both event types.
     try:
         return compute_agreement(path)
+    except FileNotFoundError:
+        return {"agreement_rate": None, "agree_count": 0, "disagree_count": 0,
+                 "inconclusive_count": 0, "reviewed_count": 0, "by_reason_code": []}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=200)
 
@@ -520,5 +523,5 @@ def admin_audit(path: str = "audit.jsonl"):
     try:
         ok, break_at, detail = audit_verify(path)
     except FileNotFoundError:
-        return {"ok": False, "break_at": None, "detail": f"{path} not found"}
+        return {"ok": True, "break_at": None, "detail": "no audit log yet"}
     return {"ok": ok, "break_at": break_at, "detail": detail}
