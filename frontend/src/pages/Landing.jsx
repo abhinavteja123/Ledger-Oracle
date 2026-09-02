@@ -45,12 +45,18 @@ function Hero() {
               the right approvals. Almost none of them check whether it's <strong>true</strong>.
               Ledger Oracle is the check that sits in front of that gap.
             </p>
+            <p className="start-here">
+              <strong>Start here:</strong> make a payment, then dispute it yourself.
+            </p>
             <div className="cta-row">
-              <a className="btn primary" href="/verify-page">
+              <a className="btn primary" href="/pay">
+                Simulate a payment <span className="arrow-wrap">→</span>
+              </a>
+              <a className="btn ghost" href="/verify-page">
                 Submit a claim <span className="arrow-wrap">→</span>
               </a>
-              <a className="btn ghost" href="/admin">
-                Open the admin console <span className="arrow-wrap">→</span>
+              <a className="btn text-link" href="/admin">
+                Open the admin console →
               </a>
             </div>
           </div>
@@ -300,8 +306,15 @@ function Money() {
               </li>
               <li>
                 <strong>Escalate routes to a human queue</strong> — <code>/review</code> — and only
-                an explicit human <code>approve</code> ever marks a claim's reference as consumed,
-                closing the loop against replay.
+                an explicit human <code>approve</code>, or an engine <code>pass</code> itself, ever
+                marks a claim's reference as consumed, closing the loop against replay.
+              </li>
+              <li>
+                <strong>One deliberate exception, clearly out-of-band:</strong> <code>/pay</code>'s
+                payment simulator writes a real settled row into <code>captures</code> via the
+                app's own connection — outside the agent's read-only tool boundary entirely, since
+                it isn't the agent acting. It exists to make this page's own claim checkable
+                end-to-end, and the amount it can write is capped for exactly that reason.
               </li>
             </ul>
             <span className="term">
@@ -428,6 +441,20 @@ function Demo() {
           No login. Pick a seat at the table.
         </Reveal>
         <Reveal className="cards">
+          <a className="card user highlight dbz-outer" href="/pay">
+            <div className="dbz-inner" style={{ padding: 28 }}>
+              <div className="idx">as the customer</div>
+              <div className="t">Make a payment</div>
+              <div className="d">
+                Simulate a real payment — a genuine row lands in the ledger and you get a real
+                UTR back. Then watch your own screen say it failed anyway, and file the complaint
+                yourself.
+              </div>
+              <div className="go">
+                Open /pay <span className="arrow-wrap">→</span>
+              </div>
+            </div>
+          </a>
           <a className="card user dbz-outer" href="/verify-page">
             <div className="dbz-inner" style={{ padding: 28 }}>
               <div className="idx">as the claimant</div>

@@ -9,6 +9,8 @@ at the API boundary too, not just inside the agent loop.
 import json
 import os
 import pathlib
+import random
+import string
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -326,6 +328,21 @@ class DecideRequest(BaseModel):
     note: str = ""
 
 
+class PaySimulateRequest(BaseModel):
+    amount_rupees: float
+    instrument: str = "upi"
+
+
+# The simulator writes into the same `captures` table the policy engine trusts as
+# ground truth, via the app's owner connection -- deliberately outside the agent's
+# read-only tool boundary (that boundary constrains what the LLM can act on, not
+# what the app itself can write). Unauthenticated + unbounded would let anyone mint
+# an arbitrarily large max_refundable_paise ceiling; this caps the blast radius to
+# a plausible demo amount. Not a substitute for real auth if this endpoint is ever
+# exposed beyond a demo.
+MAX_SIMULATED_PAYMENT_RUPEES = 50_000
+
+
 @app.get("/")
 def landing():
     return FileResponse(str(STATIC_DIST / "index.html"))
@@ -343,6 +360,11 @@ def admin_page():
 
 @app.get("/review")
 def review_page():
+    return FileResponse(str(STATIC_DIST / "index.html"))
+
+
+@app.get("/pay")
+def pay_page():
     return FileResponse(str(STATIC_DIST / "index.html"))
 
 
@@ -396,6 +418,30 @@ def verify(req: VerifyRequest):
         "max_refundable_paise": verdict.max_refundable_paise,
     })
 
+    if verdict.decision == "pass":
+        # A straight auto-pass used to never mark its reference consumed (only an
+        # admin-approved escalate did), so the same real UTR could be disputed and
+        # refunded repeatedly. Consume it immediately, same as an approved escalate.
+        resolved_ref = _normalize_ref(extracted.claimed_reference)
+        if resolved_ref:
+            try:
+                conn = db.get_owner_connection(tools.DB_PATH)
+                try:
+                    conn.execute(
+                        "INSERT INTO consumed_references (reference, consumed_by, consumed_at, approved_by) "
+                        "VALUES (?,?,?,?)",
+                        (resolved_ref, claim_id, datetime.now(timezone.utc).isoformat(), "auto"),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception as e:
+                # Never blocks the pass response (same discipline as history_store.record
+                # below) -- but silently swallowing this specific failure would mean the
+                # reference never gets consumed and replay works forever, so it must be
+                # visible on the audit trail even though the API response stays "pass".
+                record_event("consume_failed", claim_id, {"reference": resolved_ref, "detail": str(e)})
+
     response = _verdict_response(state, verdict)
 
     # Record every claim -- pass, block, and escalate -- for /admin/*. Never blocks
@@ -418,6 +464,44 @@ def verify(req: VerifyRequest):
         }
 
     return JSONResponse(response)
+
+
+@app.post("/pay/simulate")
+def pay_simulate(req: PaySimulateRequest):
+    """Simulates a real payment: inserts a genuinely settled row into `captures` so
+    the user can immediately dispute a UTR that actually exists in the ledger --
+    the exact scenario this product is built to adjudicate. Not a UI mock: this is
+    a real write via db.get_owner_connection(), same table /verify's tools.py reads."""
+    if req.amount_rupees <= 0 or req.amount_rupees > MAX_SIMULATED_PAYMENT_RUPEES:
+        return JSONResponse(
+            {"error": f"amount must be between 0 and {MAX_SIMULATED_PAYMENT_RUPEES} rupees"},
+            status_code=400,
+        )
+    instrument = req.instrument if req.instrument in ("upi", "card", "netbanking") else "upi"
+    amount_paise = round(req.amount_rupees * 100)
+    order_id = f"order_{uuid.uuid4().hex[:8]}"
+    capture_id = f"cap_{uuid.uuid4().hex[:10]}"
+    utr = "".join(random.choices(string.digits, k=12))
+    payee_vpa = f"user{uuid.uuid4().hex[:4]}@oksbi" if instrument == "upi" else None
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        conn = db.get_owner_connection(tools.DB_PATH)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=200)
+    try:
+        conn.execute(
+            "INSERT INTO captures (capture_id, order_id, amount_paise, instrument, utr, "
+            "payee_vpa, captured_at, settled_at, ledger_source) VALUES (?,?,?,?,?,?,?,?,?)",
+            (capture_id, order_id, amount_paise, instrument, utr, payee_vpa, now, now, "connected"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {
+        "order_id": order_id, "utr": utr, "capture_id": capture_id,
+        "amount_paise": amount_paise, "instrument": instrument,
+        "payee_vpa": payee_vpa, "captured_at": now,
+    }
 
 
 @app.get("/review/queue")
@@ -523,5 +607,8 @@ def admin_audit(path: str = "audit.jsonl"):
     try:
         ok, break_at, detail = audit_verify(path)
     except FileNotFoundError:
-        return {"ok": True, "break_at": None, "detail": "no audit log yet"}
+        # Distinct from ok=True (chain verified intact): nothing to verify yet is not
+        # the same claim as "verified, and it's clean" -- a cold instance (ephemeral
+        # disk, gitignored audit.jsonl) must not render as a green integrity check.
+        return {"ok": None, "break_at": None, "detail": "no audit log yet"}
     return {"ok": ok, "break_at": break_at, "detail": detail}

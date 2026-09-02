@@ -328,6 +328,10 @@ function AuditTab() {
       badgeText = "AUDIT CHECK FAILED";
       badgeClass = "audit-badge audit-failed";
       detailText = error;
+    } else if (data?.ok === null) {
+      badgeText = "AUDIT: NO DATA YET";
+      badgeClass = "audit-badge audit-empty";
+      detailText = data?.detail ?? "";
     } else {
       badgeText = data?.ok ? "AUDIT INTEGRITY: OK" : "AUDIT INTEGRITY: FAILED";
       badgeClass = "audit-badge " + (data?.ok ? "audit-ok" : "audit-failed");

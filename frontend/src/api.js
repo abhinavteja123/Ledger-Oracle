@@ -65,6 +65,15 @@ export async function getAdminAgreement() {
   return res.json();
 }
 
+export async function simulatePayment(amountRupees, instrument) {
+  const res = await fetch("/pay/simulate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ amount_rupees: amountRupees, instrument }),
+  });
+  return res.json();
+}
+
 export function rupees(paise) {
   if (paise === null || paise === undefined) return "--";
   return "Rs " + (paise / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 });

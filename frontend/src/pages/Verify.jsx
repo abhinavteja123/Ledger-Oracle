@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ThemeToggle, Mesh } from "../components/Shared.jsx";
 import { verifyClaim, rupees, DECISION_HEADLINE, summarizeEvidence } from "../api.js";
 import "./Verify.css";
@@ -98,6 +99,15 @@ function VerdictBox({ v }) {
           <span className="verdict-code">{v.reason_code ?? "--"}</span>
         </div>
       </div>
+      {decision === "pass" && (
+        <div className="abuse-note pass-note">
+          <span>🔒</span>
+          <span>
+            This reference is now consumed. Resubmitting the same claim again will block with
+            REF_ALREADY_CONSUMED — try VERIFY again with the exact same text to see it.
+          </span>
+        </div>
+      )}
       {isAbuse && (
         <div className="abuse-note">
           <span>⛔</span>
@@ -169,9 +179,20 @@ function InvariantsTable({ invariants }) {
 }
 
 export default function Verify() {
-  const [text, setText] = useState("bhai maine 2499 pay kiya, UTR 526112345678, order 4471 abhi tak nahi aaya");
+  const [searchParams] = useSearchParams();
+  const prefill = searchParams.get("prefill");
+  const [text, setText] = useState(
+    prefill || "bhai maine 2499 pay kiya, UTR 526112345678, order 4471 abhi tak nahi aaya"
+  );
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
+
+  // Coming from the Pay simulator: ?prefill=<claim text> auto-fills and auto-runs,
+  // so "File a complaint" -> Verify feels like one continuous handoff, not two steps.
+  useEffect(() => {
+    if (prefill) verify(prefill);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function verify(overrideText) {
     setLoading(true);

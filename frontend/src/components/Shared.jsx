@@ -55,11 +55,5 @@ export function ThemeToggle() {
 }
 
 export function Mesh() {
-  return (
-    <div className="oracle-mesh">
-      <span className="b1"></span>
-      <span className="b2"></span>
-      <span className="b3"></span>
-    </div>
-  );
+  return <div className="oracle-mesh"></div>;
 }

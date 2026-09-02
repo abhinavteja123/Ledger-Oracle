@@ -1,0 +1,32 @@
+.pay-lede { color: var(--ink-dim); font-size: 13px; line-height: 1.6; margin: 6px 0 22px; }
+.pay-lede code { font-family: var(--mono); color: var(--ink); }
+
+.pay-label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-faint); margin: 16px 0 6px; }
+.pay-input {
+  width: 100%; background: var(--bg-2); color: var(--ink); border: 1px solid var(--line);
+  padding: 11px 13px; border-radius: var(--r-sm); font-family: var(--mono); font-size: 14px;
+}
+.pay-input:focus { outline: none; border-color: var(--accent); }
+/* .pay-select intentionally only sets layout -- theme.css's shared `select` rule
+   owns background/chevron/focus; a background shorthand here would blow the chevron away */
+.pay-select { width: 100%; padding: 11px 32px 11px 13px; font-size: 14px; margin: 0; }
+
+.pay-error { margin-top: 10px; padding: 9px 12px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--block); background: color-mix(in srgb, var(--block) 10%, var(--panel-2)); border: 1px solid color-mix(in srgb, var(--block) 35%, var(--line)); }
+
+.pay-actions { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+.pay-actions .verify-btn { margin-top: 0; flex: 1 1 220px; }
+.pay-again { flex: 0 0 auto; }
+
+.pay-steps { margin: 0; padding-left: 0; list-style: none; counter-reset: step; display: grid; gap: 16px; }
+.pay-steps li { position: relative; padding-left: 34px; font-size: 13px; color: var(--ink-dim); line-height: 1.65; counter-increment: step; }
+.pay-steps li::before {
+  content: counter(step); position: absolute; left: 0; top: 0; width: 22px; height: 22px;
+  border-radius: var(--r-sm); background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  color: var(--accent); font-family: var(--mono); font-size: 11px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.pay-steps strong { color: var(--ink); font-weight: 600; }
+.pay-steps code { font-family: var(--mono); color: var(--ink); font-size: 12px; }
+
+.term { display: block; margin-top: 18px; font-size: 11.5px; color: var(--ink-faint); border-top: 1px solid var(--line-soft); padding-top: 14px; font-family: var(--mono); }

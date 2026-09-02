@@ -289,6 +289,44 @@ def test_repeated_claim_abuse_blocks_after_threshold(client_app, monkeypatch):
     assert body["reason_code"] == "REPEATED_CLAIM_ABUSE"
 
 
+def test_pass_verdict_consumes_reference_and_blocks_replay(client_app, monkeypatch):
+    # Real gap fixed this session: a straight auto-pass (no admin involved) used to
+    # never write consumed_references, so the same real UTR could be replayed for a
+    # fresh "pass" every time. Confirms /verify itself closes the loop now.
+    _install_fake_client(monkeypatch, CLAIM_JSON, [("get_payment_by_utr", '{"utr": "111111111111"}')])
+    first = client_app.post("/verify", json={"text": "paid 2499, UTR 111111111111"}).json()
+    assert first["decision"] == "pass"
+
+    _install_fake_client(monkeypatch, CLAIM_JSON, [("get_payment_by_utr", '{"utr": "111111111111"}')])
+    replay = client_app.post("/verify", json={"text": "paid 2499, UTR 111111111111 again"}).json()
+    assert replay["decision"] == "block"
+    assert replay["reason_code"] == "REF_ALREADY_CONSUMED"
+
+
+def test_pay_simulate_creates_real_capture_disputable_via_verify(client_app, monkeypatch):
+    res = client_app.post("/pay/simulate", json={"amount_rupees": 500, "instrument": "upi"})
+    assert res.status_code == 200
+    receipt = res.json()
+    assert receipt["utr"] and receipt["order_id"] and receipt["amount_paise"] == 50000
+
+    claim_json = json.dumps({
+        "claim_type": "payment_not_recorded", "order_id": receipt["order_id"],
+        "claimed_reference": receipt["utr"], "claimed_amount_paise": 50000,
+        "claimed_instrument": "upi", "claimed_payee_vpa": None,
+        "claimed_timestamp_iso": None, "customer_asserts_count": None,
+    })
+    _install_fake_client(monkeypatch, claim_json, [("get_payment_by_utr", '{"utr": "' + receipt["utr"] + '"}')])
+    verdict = client_app.post("/verify", json={
+        "text": f"I paid 500 rupees, UTR {receipt['utr']}, order {receipt['order_id']}, payment not recorded.",
+    }).json()
+    assert verdict["decision"] == "pass"
+
+
+def test_pay_simulate_rejects_non_positive_amount(client_app):
+    res = client_app.post("/pay/simulate", json={"amount_rupees": 0})
+    assert res.status_code == 400
+
+
 def test_admin_claim_decide_rejects_second_decision(client_app, monkeypatch):
     _install_fake_client(monkeypatch, ESCALATE_CLAIM_JSON, [])
     client_app.post("/verify", json={"text": "refund pls"})
