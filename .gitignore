@@ -13,3 +13,4 @@ data/MANIFEST.json
 .playwright-mcp/
 .agents/
 frontend/node_modules/
+video-prep-guide.md

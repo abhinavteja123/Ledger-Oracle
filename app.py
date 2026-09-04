@@ -317,6 +317,11 @@ REVIEW_QUEUE: dict[str, dict] = {}
 APPROVED_REFERENCES: set[str] = set()
 
 ADMIN_LEDGER_TABLES = ("captures", "refunds", "consumed_references")
+ADMIN_LEDGER_ORDER_COL = {
+    "captures": "captured_at",
+    "refunds": "issued_at",
+    "consumed_references": "consumed_at",
+}
 
 
 class VerifyRequest(BaseModel):
@@ -596,7 +601,10 @@ def admin_ledger_browse(table: str, limit: int = 100):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=200)
     try:
-        rows = conn.execute(f"SELECT * FROM {table} LIMIT ?", (limit,)).fetchall()
+        order_col = ADMIN_LEDGER_ORDER_COL[table]
+        rows = conn.execute(
+            f"SELECT * FROM {table} ORDER BY {order_col} DESC LIMIT ?", (limit,)
+        ).fetchall()
         return {"rows": [dict(r) for r in rows]}
     finally:
         conn.close()
